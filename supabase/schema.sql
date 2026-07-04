@@ -1,0 +1,215 @@
+create extension if not exists pgcrypto;
+
+create table if not exists public.businesses (
+  id uuid primary key default gen_random_uuid(),
+  slug text unique not null check (slug in ('scds', 'graphics')),
+  name text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.payers (
+  id uuid primary key default gen_random_uuid(),
+  business_id uuid not null references public.businesses(id),
+  full_name text not null,
+  phone text,
+  email text,
+  type text not null check (type in ('student', 'client')),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.items (
+  id uuid primary key default gen_random_uuid(),
+  business_id uuid not null references public.businesses(id),
+  payer_id uuid not null references public.payers(id),
+  title text not null,
+  total_amount numeric(14, 2) not null check (total_amount >= 0),
+  due_date date,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.payments (
+  id uuid primary key default gen_random_uuid(),
+  business_id uuid not null references public.businesses(id),
+  payer_id uuid not null references public.payers(id),
+  item_id uuid not null references public.items(id),
+  amount numeric(14, 2) not null check (amount >= 0),
+  method text not null check (method in ('M-Pesa', 'Cash', 'Bank Transfer')),
+  mpesa_code text,
+  date date not null default current_date,
+  status text not null check (status in ('Paid', 'Partial', 'Pending')),
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  is_deleted boolean not null default false
+);
+
+create table if not exists public.payment_audit_log (
+  id uuid primary key default gen_random_uuid(),
+  payment_id uuid not null references public.payments(id),
+  action text not null check (action in ('created', 'edited', 'deleted', 'restored')),
+  changed_fields jsonb not null default '[]'::jsonb,
+  previous_values jsonb not null default '{}'::jsonb,
+  changed_at timestamptz not null default now(),
+  changed_by uuid references auth.users(id)
+);
+
+create or replace function public.prevent_payment_hard_delete()
+returns trigger
+language plpgsql
+as $$
+begin
+  raise exception 'Hard deletes are disabled. Set is_deleted = true instead.';
+end;
+$$;
+
+drop trigger if exists payments_no_hard_delete on public.payments;
+create trigger payments_no_hard_delete
+before delete on public.payments
+for each row execute function public.prevent_payment_hard_delete();
+
+create or replace function public.touch_payment_and_audit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  changed text[] := '{}';
+  previous jsonb := '{}'::jsonb;
+  audit_action text;
+begin
+  if tg_op = 'INSERT' then
+    insert into public.payment_audit_log(payment_id, action, changed_fields, previous_values, changed_by)
+    values (new.id, 'created', to_jsonb(array['amount', 'method', 'status']), '{}'::jsonb, auth.uid());
+    return new;
+  end if;
+
+  if old.amount is distinct from new.amount then
+    changed := changed || 'amount';
+    previous := previous || jsonb_build_object('amount', old.amount);
+  end if;
+  if old.method is distinct from new.method then
+    changed := changed || 'method';
+    previous := previous || jsonb_build_object('method', old.method);
+  end if;
+  if old.mpesa_code is distinct from new.mpesa_code then
+    changed := changed || 'mpesa_code';
+    previous := previous || jsonb_build_object('mpesa_code', old.mpesa_code);
+  end if;
+  if old.date is distinct from new.date then
+    changed := changed || 'date';
+    previous := previous || jsonb_build_object('date', old.date);
+  end if;
+  if old.status is distinct from new.status then
+    changed := changed || 'status';
+    previous := previous || jsonb_build_object('status', old.status);
+  end if;
+  if old.notes is distinct from new.notes then
+    changed := changed || 'notes';
+    previous := previous || jsonb_build_object('notes', old.notes);
+  end if;
+  if old.is_deleted is distinct from new.is_deleted then
+    changed := changed || 'is_deleted';
+    previous := previous || jsonb_build_object('is_deleted', old.is_deleted);
+  end if;
+
+  new.updated_at := now();
+
+  if array_length(changed, 1) is not null then
+    audit_action := case
+      when old.is_deleted = false and new.is_deleted = true then 'deleted'
+      when old.is_deleted = true and new.is_deleted = false then 'restored'
+      else 'edited'
+    end;
+
+    insert into public.payment_audit_log(payment_id, action, changed_fields, previous_values, changed_by)
+    values (new.id, audit_action, to_jsonb(changed), previous, auth.uid());
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists payments_audit_insert on public.payments;
+create trigger payments_audit_insert
+after insert on public.payments
+for each row execute function public.touch_payment_and_audit();
+
+drop trigger if exists payments_audit_update on public.payments;
+create trigger payments_audit_update
+before update on public.payments
+for each row execute function public.touch_payment_and_audit();
+
+create or replace view public.payer_balances as
+select
+  i.business_id,
+  i.payer_id,
+  i.id as item_id,
+  i.title,
+  i.total_amount,
+  coalesce(sum(p.amount) filter (where p.is_deleted = false), 0) as total_paid,
+  i.total_amount - coalesce(sum(p.amount) filter (where p.is_deleted = false), 0) as balance
+from public.items i
+left join public.payments p on p.item_id = i.id
+group by i.business_id, i.payer_id, i.id, i.title, i.total_amount;
+
+create or replace view public.monthly_income as
+select
+  business_id,
+  date_trunc('month', date)::date as month,
+  count(*) as transaction_count,
+  sum(amount) as total_collected
+from public.payments
+where is_deleted = false
+group by business_id, date_trunc('month', date);
+
+create or replace view public.audit_history as
+select
+  l.id,
+  l.payment_id,
+  l.action,
+  l.changed_fields,
+  l.previous_values,
+  l.changed_at,
+  l.changed_by,
+  p.date,
+  p.amount,
+  py.full_name as payer_name,
+  b.name as business_name,
+  i.title as item_title
+from public.payment_audit_log l
+join public.payments p on p.id = l.payment_id
+join public.payers py on py.id = p.payer_id
+join public.businesses b on b.id = p.business_id
+join public.items i on i.id = p.item_id;
+
+alter table public.businesses enable row level security;
+alter table public.payers enable row level security;
+alter table public.items enable row level security;
+alter table public.payments enable row level security;
+alter table public.payment_audit_log enable row level security;
+
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+as $$
+  select auth.role() = 'authenticated'
+$$;
+
+create policy "admin read businesses" on public.businesses for select using (public.is_admin());
+create policy "admin write businesses" on public.businesses for all using (public.is_admin()) with check (public.is_admin());
+create policy "admin read payers" on public.payers for select using (public.is_admin());
+create policy "admin write payers" on public.payers for all using (public.is_admin()) with check (public.is_admin());
+create policy "admin read items" on public.items for select using (public.is_admin());
+create policy "admin write items" on public.items for all using (public.is_admin()) with check (public.is_admin());
+create policy "admin read payments" on public.payments for select using (public.is_admin());
+create policy "admin write payments" on public.payments for all using (public.is_admin()) with check (public.is_admin());
+create policy "admin read audit" on public.payment_audit_log for select using (public.is_admin());
+create policy "audit insert via trigger" on public.payment_audit_log for insert with check (public.is_admin());
+
+insert into public.businesses (slug, name)
+values
+  ('scds', 'Sam Creative Design School'),
+  ('graphics', 'Sam Creative Graphics')
+on conflict (slug) do nothing;
