@@ -53,6 +53,20 @@ create table if not exists public.payment_audit_log (
   changed_by uuid references auth.users(id)
 );
 
+create table if not exists public.app_state_snapshots (
+  id text primary key default 'primary',
+  payload jsonb not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  updated_by uuid references auth.users(id),
+  constraint app_state_payload_shape check (
+    jsonb_typeof(payload->'payers') = 'array'
+    and jsonb_typeof(payload->'items') = 'array'
+    and jsonb_typeof(payload->'payments') = 'array'
+    and jsonb_typeof(payload->'auditLog') = 'array'
+  )
+);
+
 create or replace function public.prevent_payment_hard_delete()
 returns trigger
 language plpgsql
@@ -130,6 +144,22 @@ begin
 end;
 $$;
 
+create or replace function public.touch_app_state_snapshot()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at := now();
+  new.updated_by := auth.uid();
+  return new;
+end;
+$$;
+
+drop trigger if exists app_state_snapshot_touch on public.app_state_snapshots;
+create trigger app_state_snapshot_touch
+before insert or update on public.app_state_snapshots
+for each row execute function public.touch_app_state_snapshot();
+
 drop trigger if exists payments_audit_insert on public.payments;
 create trigger payments_audit_insert
 after insert on public.payments
@@ -188,6 +218,7 @@ alter table public.payers enable row level security;
 alter table public.items enable row level security;
 alter table public.payments enable row level security;
 alter table public.payment_audit_log enable row level security;
+alter table public.app_state_snapshots enable row level security;
 
 create or replace function public.is_admin()
 returns boolean
@@ -207,6 +238,8 @@ create policy "admin read payments" on public.payments for select using (public.
 create policy "admin write payments" on public.payments for all using (public.is_admin()) with check (public.is_admin());
 create policy "admin read audit" on public.payment_audit_log for select using (public.is_admin());
 create policy "audit insert via trigger" on public.payment_audit_log for insert with check (public.is_admin());
+create policy "admin read app state" on public.app_state_snapshots for select using (public.is_admin());
+create policy "admin write app state" on public.app_state_snapshots for all using (public.is_admin()) with check (public.is_admin());
 
 insert into public.businesses (slug, name)
 values

@@ -11,6 +11,8 @@ npm run dev
 
 Copy `.env.example` to `.env.local` and add Supabase credentials when you are ready to connect production data.
 
+When Supabase is configured, record changes sync to the `app_state_snapshots` table. Without Supabase credentials, the app still persists records in browser storage so payment updates survive refreshes on the same device.
+
 ## Backend
 
 - `supabase/schema.sql` creates tables, views, row-level security policies, and audit triggers.

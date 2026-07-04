@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import jsPDF from "jspdf";
 import {
   Activity,
@@ -33,6 +33,7 @@ import {
   YAxis,
 } from "recharts";
 import { businesses, initialAuditLog, initialItems, initialPayers, initialPayments } from "./data";
+import { loadAppData, saveAppData } from "./storage";
 import type {
   AuditEntry,
   BusinessId,
@@ -43,6 +44,7 @@ import type {
   Payment,
   PaymentMethod,
   PaymentStatus,
+  StorageBackend,
 } from "./types";
 
 const money = new Intl.NumberFormat("en-KE", {
@@ -95,6 +97,9 @@ function App() {
   const [items, setItems] = useState<Item[]>(initialItems);
   const [payments, setPayments] = useState<Payment[]>(initialPayments);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>(initialAuditLog);
+  const [hydrated, setHydrated] = useState(false);
+  const [storageBackend, setStorageBackend] = useState<StorageBackend>("browser");
+  const [saveState, setSaveState] = useState<"loading" | "saved" | "saving">("loading");
   const [query, setQuery] = useState("");
   const [methodFilter, setMethodFilter] = useState<"all" | PaymentMethod>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | PaymentStatus>("all");
@@ -151,6 +156,39 @@ function App() {
 
   const trend = buildTrend(activePayments);
   const selectedPayer = selectedPayerId ? payers.find((payer) => payer.id === selectedPayerId) : null;
+
+  useEffect(() => {
+    let active = true;
+
+    loadAppData().then(({ data, backend }) => {
+      if (!active) return;
+      setPayers(data.payers);
+      setItems(data.items);
+      setPayments(data.payments);
+      setAuditLog(data.auditLog);
+      setStorageBackend(backend);
+      setSaveState("saved");
+      setHydrated(true);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+
+    const handle = window.setTimeout(() => {
+      setSaveState("saving");
+      saveAppData({ payers, items, payments, auditLog }).then(({ backend }) => {
+        setStorageBackend(backend);
+        setSaveState("saved");
+      });
+    }, 250);
+
+    return () => window.clearTimeout(handle);
+  }, [auditLog, hydrated, items, payers, payments]);
 
   function recordAudit(paymentId: string, action: AuditEntry["action"], changedFields: string[], previousValues = {}) {
     setAuditLog((current) => [
@@ -391,6 +429,12 @@ function App() {
             <div className="mt-auto rounded border border-white/12 p-4 text-sm text-white/70">
               <p className="font-medium text-white">Admin only</p>
               <p className="mt-1">Supabase Auth and RLS schema included for production access control.</p>
+              <div className="mt-4 rounded bg-white/10 px-3 py-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-white/55">Storage</p>
+                <p className="mt-1 font-medium text-white">
+                  {saveState === "loading" ? "Loading records" : saveState === "saving" ? "Saving records" : `Saved to ${storageBackend}`}
+                </p>
+              </div>
             </div>
           </div>
         </aside>

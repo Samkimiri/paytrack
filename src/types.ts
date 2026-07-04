@@ -69,3 +69,12 @@ export type EnrichedPayment = Payment & {
   businessName: string;
   balance: number;
 };
+
+export type AppData = {
+  payers: Payer[];
+  items: Item[];
+  payments: Payment[];
+  auditLog: AuditEntry[];
+};
+
+export type StorageBackend = "supabase" | "browser";

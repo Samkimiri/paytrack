@@ -25,6 +25,13 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  font-family: "Manrope", ui-sans-serif, system-ui, sans-serif;
+}
+
+h1,
+h2,
+h3 {
+  font-family: "Space Grotesk", "Manrope", ui-sans-serif, system-ui, sans-serif;
 }
 
 button,
@@ -35,6 +42,7 @@ textarea {
 }
 
 .tabular {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   font-variant-numeric: tabular-nums;
 }
 
