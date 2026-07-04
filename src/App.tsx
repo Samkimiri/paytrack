@@ -87,7 +87,9 @@ const today = "2026-07-04";
 
 function App() {
   const [scope, setScope] = useState<BusinessScope>("combined");
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setView] = useState<View>(() =>
+    new URLSearchParams(window.location.search).get("action") === "add-payment" ? "add" : "dashboard",
+  );
   const [mobileOpen, setMobileOpen] = useState(false);
   const [payers, setPayers] = useState<Payer[]>(initialPayers);
   const [items, setItems] = useState<Item[]>(initialItems);
@@ -337,9 +339,17 @@ function App() {
         >
           <div className="flex h-full flex-col p-5">
             <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/60">Payment Records</p>
-                <h1 className="mt-2 text-xl font-semibold leading-tight">Sam Creative Finance</h1>
+              <div className="flex min-w-0 items-center gap-3">
+                <img
+                  src="/logo.svg"
+                  alt="PayTrack logo"
+                  className="h-12 w-12 rounded-xl border border-white/15 bg-white shadow-sm"
+                />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/60">Payment Records</p>
+                  <h1 className="mt-1 text-xl font-semibold leading-tight">PayTrack</h1>
+                  <p className="mt-0.5 truncate text-xs text-white/60">Sam Creative Finance</p>
+                </div>
               </div>
               <button className="rounded p-2 text-white/80 hover:bg-white/10 lg:hidden" onClick={() => setMobileOpen(false)}>
                 <X className="h-5 w-5" />
@@ -392,6 +402,7 @@ function App() {
                 <button className="rounded border border-slate-200 p-2 lg:hidden" onClick={() => setMobileOpen(true)}>
                   <Menu className="h-5 w-5" />
                 </button>
+                <img src="/logo.svg" alt="" className="hidden h-10 w-10 rounded-lg border border-slate-200 bg-white sm:block lg:hidden" />
                 <div className="min-w-0">
                   <p className="text-xs font-semibold uppercase text-slate-500">Current scope</p>
                   <h2 className="truncate text-lg font-semibold text-slate-950">

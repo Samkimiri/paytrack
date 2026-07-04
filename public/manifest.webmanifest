@@ -1,0 +1,35 @@
+{
+  "name": "Sam Creative Payment Tracker",
+  "short_name": "PayTrack",
+  "description": "Professional payment records tracker for Sam Creative Design School and Sam Creative Graphics.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#F7F8FA",
+  "theme_color": "#1F2A44",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "144x144",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/maskable-icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Add Payment",
+      "short_name": "Add",
+      "description": "Open the payment entry workflow.",
+      "url": "/?action=add-payment",
+      "icons": [{ "src": "/logo.svg", "sizes": "144x144", "type": "image/svg+xml" }]
+    }
+  ]
+}
