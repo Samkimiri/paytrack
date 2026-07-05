@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import jsPDF from "jspdf";
 import {
   Activity,
+  AlertTriangle,
   ArchiveRestore,
   Banknote,
   BarChart3,
@@ -16,6 +17,7 @@ import {
   ReceiptText,
   Search,
   Settings,
+  ShieldCheck,
   Trash2,
   Undo2,
   UsersRound,
@@ -70,6 +72,26 @@ const nav = [
 
 type View = (typeof nav)[number]["id"];
 
+type ConfidenceSeverity = "critical" | "warning" | "notice";
+
+type ConfidenceIssue = {
+  id: string;
+  title: string;
+  detail: string;
+  severity: ConfidenceSeverity;
+  paymentId?: string;
+  itemId?: string;
+  payerName?: string;
+};
+
+type ConfidenceLedger = {
+  score: number;
+  cleanCount: number;
+  issueCount: number;
+  issues: ConfidenceIssue[];
+  byPaymentId: Record<string, ConfidenceIssue[]>;
+};
+
 type FormState = {
   businessId: BusinessId;
   payerId: string;
@@ -85,7 +107,7 @@ type FormState = {
   notes: string;
 };
 
-const today = "2026-07-04";
+const today = new Date().toISOString().slice(0, 10);
 
 function App() {
   const [scope, setScope] = useState<BusinessScope>("combined");
@@ -156,6 +178,10 @@ function App() {
 
   const trend = buildTrend(activePayments);
   const selectedPayer = selectedPayerId ? payers.find((payer) => payer.id === selectedPayerId) : null;
+  const confidenceLedger = useMemo(
+    () => buildConfidenceLedger(enrichedPayments, items, auditLog, visibleBusinessIds),
+    [auditLog, enrichedPayments, items, visibleBusinessIds],
+  );
 
   useEffect(() => {
     let active = true;
@@ -475,6 +501,7 @@ function App() {
                 activePayers={scopedPayers.length}
                 trend={trend}
                 recent={scopedPayments.slice(0, 6)}
+                confidenceLedger={confidenceLedger}
                 onPrint={printReceipt}
               />
             )}
@@ -488,6 +515,7 @@ function App() {
                 statusFilter={statusFilter}
                 setStatusFilter={setStatusFilter}
                 payments={scopedPayments}
+                confidenceLedger={confidenceLedger}
                 onDelete={softDelete}
                 onRestore={restorePayment}
                 onEdit={markEdited}
@@ -539,6 +567,7 @@ function Dashboard({
   activePayers,
   trend,
   recent,
+  confidenceLedger,
   onPrint,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
@@ -548,6 +577,7 @@ function Dashboard({
   activePayers: number;
   trend: { month: string; income: number }[];
   recent: EnrichedPayment[];
+  confidenceLedger: ConfidenceLedger;
   onPrint: (payment: EnrichedPayment) => void;
 }) {
   return (
@@ -556,7 +586,7 @@ function Dashboard({
         <MetricCard label="Total Collected" value={money.format(totalCollected)} icon={Banknote} color={activeBrand.accent} />
         <MetricCard label="Outstanding Balance" value={money.format(outstanding)} icon={Activity} color={activeBrand.alert} />
         <MetricCard label="Transactions" value={String(transactions)} icon={ReceiptText} color={activeBrand.success} />
-        <MetricCard label="Active Payers" value={String(activePayers)} icon={UsersRound} color={activeBrand.accent} />
+        <MetricCard label="Audit Health" value={`${confidenceLedger.score}%`} icon={ShieldCheck} color={confidenceLedger.score >= 85 ? activeBrand.success : activeBrand.alert} />
       </section>
 
       <section className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
@@ -583,6 +613,16 @@ function Dashboard({
           <CompactPayments payments={recent} onPrint={onPrint} />
         </Panel>
       </section>
+      <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+        <ConfidencePanel ledger={confidenceLedger} activeBrand={activeBrand} />
+        <Panel title="Active Payers" icon={UsersRound}>
+          <div className="rounded border border-slate-200 bg-slate-50 p-5">
+            <p className="text-xs font-semibold uppercase text-slate-500">Current payer count</p>
+            <p className="mt-2 text-4xl font-semibold text-slate-950 tabular">{activePayers}</p>
+            <p className="mt-2 text-sm text-slate-500">Students and clients in the selected business scope.</p>
+          </div>
+        </Panel>
+      </section>
     </div>
   );
 }
@@ -596,6 +636,7 @@ function PaymentsView(props: {
   statusFilter: "all" | PaymentStatus;
   setStatusFilter: (value: "all" | PaymentStatus) => void;
   payments: EnrichedPayment[];
+  confidenceLedger: ConfidenceLedger;
   onDelete: (payment: Payment) => void;
   onRestore: (payment: Payment) => void;
   onEdit: (payment: Payment) => void;
@@ -648,7 +689,10 @@ function PaymentsView(props: {
             {props.payments.map((payment) => (
               <tr key={payment.id} className={`border-b border-slate-100 ${payment.isDeleted ? "bg-rose-50/70 text-slate-500" : "bg-white"}`}>
                 <td className="px-3 py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
-                <td className="px-3 py-3 font-medium text-slate-950">{payment.payerName}</td>
+                <td className="px-3 py-3">
+                  <p className="font-medium text-slate-950">{payment.payerName}</p>
+                  <PaymentConfidenceBadge issues={props.confidenceLedger.byPaymentId[payment.id] ?? []} />
+                </td>
                 <td className="px-3 py-3">{payment.businessName}</td>
                 <td className="px-3 py-3">{payment.itemTitle}</td>
                 <td className="px-3 py-3 font-semibold tabular">{money.format(payment.amount)}</td>
@@ -988,6 +1032,74 @@ function ProfileDetails({
   );
 }
 
+function ConfidencePanel({
+  ledger,
+  activeBrand,
+}: {
+  ledger: ConfidenceLedger;
+  activeBrand: (typeof businesses)[BusinessId];
+}) {
+  const topIssues = ledger.issues.slice(0, 5);
+
+  return (
+    <Panel title="Payment Confidence Ledger" icon={ShieldCheck}>
+      <div className="grid gap-4 md:grid-cols-[180px_1fr]">
+        <div className="rounded border border-slate-200 bg-slate-50 p-5">
+          <p className="text-xs font-semibold uppercase text-slate-500">Clean records</p>
+          <p className="mt-2 text-4xl font-semibold tabular" style={{ color: ledger.score >= 85 ? activeBrand.success : activeBrand.alert }}>
+            {ledger.score}%
+          </p>
+          <p className="mt-2 text-sm text-slate-500">
+            {ledger.issueCount === 0 ? "No review items found." : `${ledger.issueCount} review item${ledger.issueCount === 1 ? "" : "s"} found.`}
+          </p>
+        </div>
+        <div className="space-y-2">
+          {topIssues.length ? (
+            topIssues.map((issue) => <ConfidenceIssueRow key={issue.id} issue={issue} />)
+          ) : (
+            <div className="rounded border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+              Records look clean. Keep logging notes and transaction references as payments come in.
+            </div>
+          )}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function ConfidenceIssueRow({ issue }: { issue: ConfidenceIssue }) {
+  const color = confidenceColor(issue.severity);
+  return (
+    <div className="rounded border border-slate-200 bg-white p-3">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" style={{ color }} />
+        <div className="min-w-0">
+          <p className="font-semibold text-slate-950">{issue.title}</p>
+          <p className="mt-1 text-sm text-slate-500">{issue.detail}</p>
+          {issue.payerName && <p className="mt-1 text-xs font-semibold uppercase text-slate-400">{issue.payerName}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PaymentConfidenceBadge({ issues }: { issues: ConfidenceIssue[] }) {
+  if (!issues.length) return null;
+  const highest = issues.some((issue) => issue.severity === "critical")
+    ? "critical"
+    : issues.some((issue) => issue.severity === "warning")
+      ? "warning"
+      : "notice";
+  const color = confidenceColor(highest);
+
+  return (
+    <span className="mt-1 inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: `${color}18`, color }}>
+      <AlertTriangle className="h-3 w-3" />
+      {issues.length} review
+    </span>
+  );
+}
+
 function MetricCard({ label, value, icon: Icon, color }: { label: string; value: string; icon: LucideIcon; color: string }) {
   return (
     <div className="rounded border border-slate-200 bg-white p-5 shadow-soft" style={{ borderTopColor: color, borderTopWidth: 3 }}>
@@ -1105,6 +1217,142 @@ function buildTrend(payments: EnrichedPayment[]) {
       .reduce((sum, payment) => sum + payment.amount, 0);
     return { month, income };
   });
+}
+
+function buildConfidenceLedger(
+  payments: EnrichedPayment[],
+  items: Item[],
+  auditLog: AuditEntry[],
+  visibleBusinessIds: BusinessId[],
+): ConfidenceLedger {
+  const issues: ConfidenceIssue[] = [];
+  const scopedPayments = payments.filter((payment) => visibleBusinessIds.includes(payment.businessId));
+  const activePayments = scopedPayments.filter((payment) => !payment.isDeleted);
+  const editedOrRestoredPaymentIds = new Set(
+    auditLog
+      .filter((entry) => entry.action === "edited" || entry.action === "restored")
+      .map((entry) => entry.paymentId),
+  );
+  const paymentById = new Map(scopedPayments.map((payment) => [payment.id, payment]));
+
+  activePayments.forEach((payment) => {
+    if (payment.method === "M-Pesa" && !payment.mpesaCode?.trim()) {
+      issues.push({
+        id: `missing-mpesa-${payment.id}`,
+        title: "Missing M-Pesa code",
+        detail: `${payment.itemTitle} has an M-Pesa payment without a transaction code.`,
+        severity: "critical",
+        paymentId: payment.id,
+        payerName: payment.payerName,
+      });
+    }
+
+    if (payment.method === "Cash" && !payment.notes.trim()) {
+      issues.push({
+        id: `cash-note-${payment.id}`,
+        title: "Cash payment needs notes",
+        detail: "Manual cash entries should include a short receipt or handover note.",
+        severity: "warning",
+        paymentId: payment.id,
+        payerName: payment.payerName,
+      });
+    }
+
+    if (payment.edited || editedOrRestoredPaymentIds.has(payment.id)) {
+      issues.push({
+        id: `edited-${payment.id}`,
+        title: "Edited record needs review",
+        detail: "This payment has been edited or restored and should be checked before month-end close.",
+        severity: "notice",
+        paymentId: payment.id,
+        payerName: payment.payerName,
+      });
+    }
+  });
+
+  const duplicateGroups = new Map<string, EnrichedPayment[]>();
+  activePayments.forEach((payment) => {
+    const key = `${payment.payerId}|${payment.date}|${payment.amount}`;
+    duplicateGroups.set(key, [...(duplicateGroups.get(key) ?? []), payment]);
+  });
+  duplicateGroups.forEach((group) => {
+    if (group.length < 2) return;
+    group.forEach((payment) => {
+      issues.push({
+        id: `duplicate-${payment.id}`,
+        title: "Possible duplicate payment",
+        detail: `${money.format(payment.amount)} appears more than once for this payer on ${dateFmt.format(new Date(payment.date))}.`,
+        severity: "warning",
+        paymentId: payment.id,
+        payerName: payment.payerName,
+      });
+    });
+  });
+
+  items
+    .filter((item) => visibleBusinessIds.includes(item.businessId))
+    .forEach((item) => {
+      const itemPayments = activePayments.filter((payment) => payment.itemId === item.id);
+      const paid = itemPayments.reduce((sum, payment) => sum + payment.amount, 0);
+      const balance = item.totalAmount - paid;
+      const representativePayment = itemPayments[0];
+
+      if (paid > item.totalAmount) {
+        issues.push({
+          id: `overpaid-${item.id}`,
+          title: "Payment exceeds balance",
+          detail: `${item.title} is overpaid by ${money.format(paid - item.totalAmount)}.`,
+          severity: "critical",
+          paymentId: representativePayment?.id,
+          itemId: item.id,
+          payerName: representativePayment?.payerName,
+        });
+      }
+
+      if (balance > 0 && item.dueDate && item.dueDate < today) {
+        issues.push({
+          id: `overdue-${item.id}`,
+          title: "Outstanding balance past due",
+          detail: `${item.title} still has ${money.format(balance)} due after ${dateFmt.format(new Date(item.dueDate))}.`,
+          severity: "warning",
+          paymentId: representativePayment?.id,
+          itemId: item.id,
+          payerName: representativePayment?.payerName,
+        });
+      }
+    });
+
+  const byPaymentId = issues.reduce<Record<string, ConfidenceIssue[]>>((groups, issue) => {
+    if (!issue.paymentId || !paymentById.has(issue.paymentId)) return groups;
+    groups[issue.paymentId] = [...(groups[issue.paymentId] ?? []), issue];
+    return groups;
+  }, {});
+
+  const penalty = issues.reduce((sum, issue) => {
+    if (issue.severity === "critical") return sum + 12;
+    if (issue.severity === "warning") return sum + 7;
+    return sum + 4;
+  }, 0);
+
+  return {
+    score: Math.max(0, Math.min(100, 100 - penalty)),
+    cleanCount: Math.max(activePayments.length - Object.keys(byPaymentId).length, 0),
+    issueCount: issues.length,
+    issues: issues.sort((a, b) => severityWeight(b.severity) - severityWeight(a.severity)),
+    byPaymentId,
+  };
+}
+
+function severityWeight(severity: ConfidenceSeverity) {
+  if (severity === "critical") return 3;
+  if (severity === "warning") return 2;
+  return 1;
+}
+
+function confidenceColor(severity: ConfidenceSeverity) {
+  if (severity === "critical") return "#B5533C";
+  if (severity === "warning") return "#C4665A";
+  return "#3B4E8C";
 }
 
 export default App;
