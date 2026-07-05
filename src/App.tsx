@@ -92,6 +92,30 @@ type ConfidenceLedger = {
   byPaymentId: Record<string, ConfidenceIssue[]>;
 };
 
+type FollowUpStatus = "overdue" | "due-soon" | "scheduled";
+
+type FollowUpItem = {
+  id: string;
+  businessId: BusinessId;
+  payerName: string;
+  phone: string;
+  email: string;
+  itemTitle: string;
+  dueDate: string;
+  balance: number;
+  daysUntilDue: number;
+  status: FollowUpStatus;
+  lastPaymentDate?: string;
+};
+
+type FollowUpLedger = {
+  items: FollowUpItem[];
+  overdueTotal: number;
+  dueSoonTotal: number;
+  scheduledTotal: number;
+  priorityCount: number;
+};
+
 type FormState = {
   businessId: BusinessId;
   payerId: string;
@@ -181,6 +205,10 @@ function App() {
   const confidenceLedger = useMemo(
     () => buildConfidenceLedger(enrichedPayments, items, auditLog, visibleBusinessIds),
     [auditLog, enrichedPayments, items, visibleBusinessIds],
+  );
+  const followUpLedger = useMemo(
+    () => buildFollowUpLedger(items, payers, payments, visibleBusinessIds),
+    [items, payers, payments, visibleBusinessIds],
   );
 
   useEffect(() => {
@@ -392,6 +420,32 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
+  function exportFollowUps() {
+    const header = ["payer", "phone", "email", "business", "item", "due_date", "balance", "status", "days_until_due", "last_payment"];
+    const rows = followUpLedger.items.map((item) => [
+      item.payerName,
+      item.phone,
+      item.email,
+      businesses[item.businessId].shortName,
+      item.itemTitle,
+      item.dueDate,
+      item.balance,
+      item.status,
+      item.daysUntilDue,
+      item.lastPaymentDate ?? "",
+    ]);
+    const csv = [header, ...rows]
+      .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `payment-follow-ups-${scope}-${today}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="min-h-screen transition-colors" style={{ backgroundColor: activeBrand.light }}>
       <div className="flex min-h-screen">
@@ -502,6 +556,8 @@ function App() {
                 trend={trend}
                 recent={scopedPayments.slice(0, 6)}
                 confidenceLedger={confidenceLedger}
+                followUpLedger={followUpLedger}
+                onExportFollowUps={exportFollowUps}
                 onPrint={printReceipt}
               />
             )}
@@ -548,7 +604,9 @@ function App() {
                 activeBrand={activeBrand}
                 scopedPayments={scopedPayments}
                 trend={trend}
+                followUpLedger={followUpLedger}
                 onExport={exportCsv}
+                onExportFollowUps={exportFollowUps}
               />
             )}
             {view === "settings" && <SettingsView activeBrand={activeBrand} />}
@@ -568,6 +626,8 @@ function Dashboard({
   trend,
   recent,
   confidenceLedger,
+  followUpLedger,
+  onExportFollowUps,
   onPrint,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
@@ -578,6 +638,8 @@ function Dashboard({
   trend: { month: string; income: number }[];
   recent: EnrichedPayment[];
   confidenceLedger: ConfidenceLedger;
+  followUpLedger: FollowUpLedger;
+  onExportFollowUps: () => void;
   onPrint: (payment: EnrichedPayment) => void;
 }) {
   return (
@@ -615,13 +677,7 @@ function Dashboard({
       </section>
       <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
         <ConfidencePanel ledger={confidenceLedger} activeBrand={activeBrand} />
-        <Panel title="Active Payers" icon={UsersRound}>
-          <div className="rounded border border-slate-200 bg-slate-50 p-5">
-            <p className="text-xs font-semibold uppercase text-slate-500">Current payer count</p>
-            <p className="mt-2 text-4xl font-semibold text-slate-950 tabular">{activePayers}</p>
-            <p className="mt-2 text-sm text-slate-500">Students and clients in the selected business scope.</p>
-          </div>
-        </Panel>
+        <FollowUpPanel ledger={followUpLedger} activeBrand={activeBrand} onExport={onExportFollowUps} />
       </section>
     </div>
   );
@@ -904,12 +960,16 @@ function ReportsView({
   activeBrand,
   scopedPayments,
   trend,
+  followUpLedger,
   onExport,
+  onExportFollowUps,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
   scopedPayments: EnrichedPayment[];
   trend: { month: string; income: number }[];
+  followUpLedger: FollowUpLedger;
   onExport: () => void;
+  onExportFollowUps: () => void;
 }) {
   const byBusiness = Object.values(businesses).map((business) => ({
     business,
@@ -929,6 +989,16 @@ function ReportsView({
             </div>
           ))}
         </div>
+      </Panel>
+      <Panel title="Follow-Up Export" icon={CalendarDays} action={<IconButton label="Download follow-ups" icon={Download} onClick={onExportFollowUps} />}>
+        <div className="grid gap-4 md:grid-cols-3">
+          <MetricMini label="Overdue" value={money.format(followUpLedger.overdueTotal)} color={activeBrand.alert} />
+          <MetricMini label="Due Soon" value={money.format(followUpLedger.dueSoonTotal)} color={activeBrand.success} />
+          <MetricMini label="Priority Items" value={String(followUpLedger.priorityCount)} color={activeBrand.accent} />
+        </div>
+        <p className="mt-4 text-sm text-slate-500">
+          Export a reminder-ready CSV containing payer contacts, due dates, balances, and last payment dates.
+        </p>
       </Panel>
       <Panel title="Monthly Income" icon={BarChart3}>
         <div className="grid gap-2">
@@ -1028,6 +1098,64 @@ function ProfileDetails({
           ))}
         </div>
       </details>
+    </div>
+  );
+}
+
+function FollowUpPanel({
+  ledger,
+  activeBrand,
+  onExport,
+}: {
+  ledger: FollowUpLedger;
+  activeBrand: (typeof businesses)[BusinessId];
+  onExport: () => void;
+}) {
+  const priorityItems = ledger.items.filter((item) => item.status !== "scheduled").slice(0, 5);
+
+  return (
+    <Panel title="Follow-Up & Cashflow Watchlist" icon={CalendarDays} action={<IconButton label="Export follow-ups" icon={Download} onClick={onExport} />}>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <MetricMini label="Overdue" value={money.format(ledger.overdueTotal)} color={activeBrand.alert} />
+        <MetricMini label="Due Soon" value={money.format(ledger.dueSoonTotal)} color={activeBrand.success} />
+        <MetricMini label="Queue" value={String(ledger.priorityCount)} color={activeBrand.accent} />
+      </div>
+      <div className="mt-4 space-y-2">
+        {priorityItems.length ? (
+          priorityItems.map((item) => <FollowUpRow key={item.id} item={item} activeBrand={activeBrand} />)
+        ) : (
+          <div className="rounded border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+            No overdue or near-due balances in the selected scope.
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function FollowUpRow({ item, activeBrand }: { item: FollowUpItem; activeBrand: (typeof businesses)[BusinessId] }) {
+  const isOverdue = item.status === "overdue";
+  const color = isOverdue ? activeBrand.alert : activeBrand.success;
+  const timing =
+    item.daysUntilDue < 0
+      ? `${Math.abs(item.daysUntilDue)} day${Math.abs(item.daysUntilDue) === 1 ? "" : "s"} overdue`
+      : `Due in ${item.daysUntilDue} day${item.daysUntilDue === 1 ? "" : "s"}`;
+
+  return (
+    <div className="rounded border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-semibold text-slate-950">{item.payerName}</p>
+          <p className="mt-1 text-sm text-slate-500">{item.itemTitle}</p>
+          <p className="mt-1 text-xs text-slate-400">
+            {item.phone || item.email || "No contact saved"}{item.lastPaymentDate ? ` · Last paid ${dateFmt.format(new Date(item.lastPaymentDate))}` : ""}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="font-semibold tabular" style={{ color }}>{money.format(item.balance)}</p>
+          <p className="mt-1 text-xs font-semibold uppercase" style={{ color }}>{timing}</p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1217,6 +1345,61 @@ function buildTrend(payments: EnrichedPayment[]) {
       .reduce((sum, payment) => sum + payment.amount, 0);
     return { month, income };
   });
+}
+
+function buildFollowUpLedger(
+  items: Item[],
+  payers: Payer[],
+  payments: Payment[],
+  visibleBusinessIds: BusinessId[],
+): FollowUpLedger {
+  const current = new Date(`${today}T00:00:00`);
+  const followUps = items
+    .filter((item) => visibleBusinessIds.includes(item.businessId))
+    .map((item) => {
+      const payer = payers.find((entry) => entry.id === item.payerId);
+      const itemPayments = payments
+        .filter((payment) => payment.itemId === item.id && !payment.isDeleted)
+        .sort((a, b) => b.date.localeCompare(a.date));
+      const paid = itemPayments.reduce((sum, payment) => sum + payment.amount, 0);
+      const balance = Math.max(item.totalAmount - paid, 0);
+      const due = new Date(`${item.dueDate}T00:00:00`);
+      const daysUntilDue = Math.ceil((due.getTime() - current.getTime()) / 86_400_000);
+      const status: FollowUpStatus = daysUntilDue < 0 ? "overdue" : daysUntilDue <= 14 ? "due-soon" : "scheduled";
+
+      return {
+        id: item.id,
+        businessId: item.businessId,
+        payerName: payer?.fullName ?? "Unknown payer",
+        phone: payer?.phone ?? "",
+        email: payer?.email ?? "",
+        itemTitle: item.title,
+        dueDate: item.dueDate,
+        balance,
+        daysUntilDue,
+        status,
+        lastPaymentDate: itemPayments[0]?.date,
+      };
+    })
+    .filter((item) => item.balance > 0)
+    .sort((a, b) => {
+      if (a.status !== b.status) return followUpWeight(a.status) - followUpWeight(b.status);
+      return a.daysUntilDue - b.daysUntilDue;
+    });
+
+  return {
+    items: followUps,
+    overdueTotal: followUps.filter((item) => item.status === "overdue").reduce((sum, item) => sum + item.balance, 0),
+    dueSoonTotal: followUps.filter((item) => item.status === "due-soon").reduce((sum, item) => sum + item.balance, 0),
+    scheduledTotal: followUps.filter((item) => item.status === "scheduled").reduce((sum, item) => sum + item.balance, 0),
+    priorityCount: followUps.filter((item) => item.status !== "scheduled").length,
+  };
+}
+
+function followUpWeight(status: FollowUpStatus) {
+  if (status === "overdue") return 0;
+  if (status === "due-soon") return 1;
+  return 2;
 }
 
 function buildConfidenceLedger(
