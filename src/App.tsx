@@ -2,13 +2,17 @@ import { FormEvent, Suspense, lazy, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  ArrowRight,
   ArchiveRestore,
   Banknote,
   BarChart3,
   BriefcaseBusiness,
   CalendarDays,
+  Coins,
+  CreditCard,
   Download,
   FileText,
+  Home,
   LayoutDashboard,
   Mail,
   Menu,
@@ -148,6 +152,7 @@ function openPaymentNotifications(details: PaymentNotificationDetails) {
 }
 
 const nav = [
+  { id: "home", label: "Home", icon: Home },
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "payments", label: "Payments", icon: ReceiptText },
   { id: "payers", label: "Clients/Students", icon: UsersRound },
@@ -231,7 +236,7 @@ const trashRetentionDays = 30;
 function App() {
   const [scope, setScope] = useState<BusinessScope>("combined");
   const [view, setView] = useState<View>(() =>
-    new URLSearchParams(window.location.search).get("action") === "add-payment" ? "add" : "dashboard",
+    new URLSearchParams(window.location.search).get("action") === "add-payment" ? "add" : "home",
   );
   const [mobileOpen, setMobileOpen] = useState(false);
   const [payers, setPayers] = useState<Payer[]>(defaultAppData.payers);
@@ -651,7 +656,7 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen transition-colors" style={{ backgroundColor: activeBrand.light }}>
+    <div className="money-pattern min-h-screen transition-colors" style={{ backgroundColor: activeBrand.light }}>
       <div className="flex min-h-screen">
         <aside
           className={`fixed inset-y-0 left-0 z-40 w-72 transform text-white transition-transform duration-200 lg:static lg:translate-x-0 ${
@@ -713,6 +718,21 @@ function App() {
               ))}
             </nav>
 
+            <div className="money-sidebar-graphic mt-7 rounded border border-white/12 p-4 text-white">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-white/55">Cash flow</p>
+                  <p className="mt-1 text-sm font-semibold">KES ledger</p>
+                </div>
+                <Coins className="h-6 w-6 text-white/75" />
+              </div>
+              <div className="mt-4 grid grid-cols-3 gap-1">
+                <span />
+                <span />
+                <span />
+              </div>
+            </div>
+
             <div className="mt-auto rounded border border-white/12 p-4 text-sm text-white/70">
               <p className="font-medium text-white">Admin only</p>
               <p className="mt-1">Supabase Auth and RLS schema included for production access control.</p>
@@ -765,6 +785,18 @@ function App() {
           </header>
 
           <div className="px-4 py-6 lg:px-8">
+            {view === "home" && (
+              <HomeView
+                activeBrand={activeBrand}
+                scope={scope}
+                totalCollected={totalCollected}
+                outstanding={outstanding}
+                transactions={activePayments.length}
+                activePayers={scopedPayers.length}
+                confidenceScore={confidenceLedger.score}
+                onNavigate={setView}
+              />
+            )}
             {view === "dashboard" && (
               <Dashboard
                 activeBrand={activeBrand}
@@ -844,6 +876,111 @@ function App() {
   );
 }
 
+function HomeView({
+  activeBrand,
+  scope,
+  totalCollected,
+  outstanding,
+  transactions,
+  activePayers,
+  confidenceScore,
+  onNavigate,
+}: {
+  activeBrand: (typeof businesses)[BusinessId];
+  scope: BusinessScope;
+  totalCollected: number;
+  outstanding: number;
+  transactions: number;
+  activePayers: number;
+  confidenceScore: number;
+  onNavigate: (view: View) => void;
+}) {
+  const scopeLabel = scope === "combined" ? "Sam Creative businesses" : activeBrand.name;
+
+  return (
+    <div className="space-y-6">
+      <MoneyDashboardGraphic
+        activeBrand={activeBrand}
+        totalCollected={totalCollected}
+        outstanding={outstanding}
+        transactions={transactions}
+        activePayers={activePayers}
+        eyebrow="PayTrack home"
+        title={`Welcome back to ${scopeLabel}.`}
+        description="Review cash flow, open finance reports, add new payments, and follow up on balances from one money-focused workspace."
+      />
+
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <HomeActionCard
+          icon={Plus}
+          label="Record payment"
+          detail="Add a new payment and receipt details."
+          color={activeBrand.accent}
+          onClick={() => onNavigate("add")}
+        />
+        <HomeActionCard
+          icon={ReceiptText}
+          label="View payments"
+          detail="Search transactions and print receipts."
+          color={activeBrand.primary}
+          onClick={() => onNavigate("payments")}
+        />
+        <HomeActionCard
+          icon={UsersRound}
+          label="Clients & students"
+          detail="Check payer profiles and balances."
+          color={activeBrand.success}
+          onClick={() => onNavigate("payers")}
+        />
+        <HomeActionCard
+          icon={BarChart3}
+          label="Reports"
+          detail="Export ledgers and follow-up lists."
+          color={activeBrand.alert}
+          onClick={() => onNavigate("reports")}
+        />
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-3">
+        <MetricCard label="Total Collected" value={money.format(totalCollected)} icon={Banknote} color={activeBrand.accent} />
+        <MetricCard label="Open Balances" value={money.format(outstanding)} icon={Activity} color={activeBrand.alert} />
+        <MetricCard label="Audit Confidence" value={`${confidenceScore}%`} icon={ShieldCheck} color={confidenceScore >= 85 ? activeBrand.success : activeBrand.alert} />
+      </section>
+    </div>
+  );
+}
+
+function HomeActionCard({
+  icon: Icon,
+  label,
+  detail,
+  color,
+  onClick,
+}: {
+  icon: LucideIcon;
+  label: string;
+  detail: string;
+  color: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className="money-glow-card group rounded border border-slate-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-slate-300"
+      onClick={onClick}
+      style={{ "--glow-color": color, borderTopColor: color, borderTopWidth: 3 } as React.CSSProperties}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <span className="inline-flex h-11 w-11 items-center justify-center rounded border border-slate-200 bg-slate-50" style={{ color }}>
+          <Icon className="h-5 w-5" />
+        </span>
+        <ArrowRight className="h-5 w-5 text-slate-300 transition group-hover:translate-x-1 group-hover:text-slate-500" />
+      </div>
+      <p className="mt-4 text-base font-semibold text-slate-950">{label}</p>
+      <p className="mt-1 text-sm leading-6 text-slate-500">{detail}</p>
+    </button>
+  );
+}
+
 function Dashboard({
   activeBrand,
   totalCollected,
@@ -871,6 +1008,14 @@ function Dashboard({
 }) {
   return (
     <div className="space-y-6">
+      <MoneyDashboardGraphic
+        activeBrand={activeBrand}
+        totalCollected={totalCollected}
+        outstanding={outstanding}
+        transactions={transactions}
+        activePayers={activePayers}
+      />
+
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Total Collected" value={money.format(totalCollected)} icon={Banknote} color={activeBrand.accent} />
         <MetricCard label="Outstanding Balance" value={money.format(outstanding)} icon={Activity} color={activeBrand.alert} />
@@ -895,6 +1040,84 @@ function Dashboard({
         <FollowUpPanel ledger={followUpLedger} activeBrand={activeBrand} onExport={onExportFollowUps} />
       </section>
     </div>
+  );
+}
+
+function MoneyDashboardGraphic({
+  activeBrand,
+  totalCollected,
+  outstanding,
+  transactions,
+  activePayers,
+  eyebrow = "Money dashboard",
+  title = "Track every shilling from payment to balance.",
+  description = "Collection totals, outstanding balances, receipts, and follow-ups are visualized as one finance ledger.",
+}: {
+  activeBrand: (typeof businesses)[BusinessId];
+  totalCollected: number;
+  outstanding: number;
+  transactions: number;
+  activePayers: number;
+  eyebrow?: string;
+  title?: string;
+  description?: string;
+}) {
+  return (
+    <section
+      className="money-dashboard-graphic overflow-hidden rounded border border-slate-200 p-5 text-white shadow-soft md:p-6"
+      style={{ "--brand-primary": activeBrand.primary, "--brand-accent": activeBrand.accent } as React.CSSProperties}
+    >
+      <div className="relative z-10 grid gap-5 lg:grid-cols-[1.15fr_0.85fr] lg:items-center">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded bg-white/12 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-white/75">
+            <WalletGlyph />
+            {eyebrow}
+          </div>
+          <h2 className="mt-4 max-w-2xl text-2xl font-semibold leading-tight md:text-3xl">
+            {title}
+          </h2>
+          <p className="mt-3 max-w-xl text-sm leading-6 text-white/72">
+            {description}
+          </p>
+          <div className="mt-5 grid max-w-2xl gap-3 sm:grid-cols-3">
+            <MoneyGraphicStat label="Collected" value={money.format(totalCollected)} />
+            <MoneyGraphicStat label="Outstanding" value={money.format(outstanding)} />
+            <MoneyGraphicStat label="Records" value={`${transactions} / ${activePayers}`} />
+          </div>
+        </div>
+
+        <div className="money-stack-illustration" aria-hidden="true">
+          <div className="money-note note-one">
+            <span>KES</span>
+            <strong>{money.format(Math.max(totalCollected, 0)).replace("KES", "").trim()}</strong>
+          </div>
+          <div className="money-note note-two">
+            <span>PAID</span>
+            <CreditCard className="h-7 w-7" />
+          </div>
+          <div className="coin coin-one">K</div>
+          <div className="coin coin-two">S</div>
+          <div className="coin coin-three">+</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MoneyGraphicStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-white/14 bg-white/10 px-3 py-3 backdrop-blur">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-white/55">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold tabular text-white">{value}</p>
+    </div>
+  );
+}
+
+function WalletGlyph() {
+  return (
+    <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-white/14">
+      <CreditCard className="h-3.5 w-3.5" />
+    </span>
   );
 }
 

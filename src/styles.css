@@ -46,6 +46,211 @@
     position: relative;
     z-index: 1;
   }
+
+  .money-pattern {
+    background-image:
+      linear-gradient(135deg, rgba(31, 110, 82, 0.055) 0 1px, transparent 1px 24px),
+      linear-gradient(45deg, rgba(217, 164, 65, 0.045) 0 1px, transparent 1px 28px);
+    background-size: 38px 38px, 46px 46px;
+  }
+
+  .money-sidebar-graphic {
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)),
+      repeating-linear-gradient(90deg, transparent 0 12px, rgba(255, 255, 255, 0.06) 12px 13px);
+    overflow: hidden;
+    position: relative;
+  }
+
+  .money-sidebar-graphic::after {
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 999px;
+    content: "KES";
+    font-size: 10px;
+    font-weight: 800;
+    height: 58px;
+    letter-spacing: 0.12em;
+    line-height: 58px;
+    opacity: 0.42;
+    position: absolute;
+    right: -12px;
+    text-align: center;
+    top: 16px;
+    transform: rotate(-12deg);
+    width: 58px;
+  }
+
+  .money-sidebar-graphic span {
+    background: rgba(255, 255, 255, 0.28);
+    border-radius: 999px;
+    display: block;
+    height: 5px;
+  }
+
+  .money-dashboard-graphic {
+    background:
+      linear-gradient(120deg, var(--brand-primary, #172033), color-mix(in srgb, var(--brand-primary, #172033) 72%, #000000)),
+      repeating-linear-gradient(90deg, transparent 0 22px, rgba(255, 255, 255, 0.04) 22px 23px);
+    position: relative;
+  }
+
+  .money-dashboard-graphic::before {
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.11), transparent 52%),
+      repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.055) 0 1px, transparent 1px 14px);
+    content: "";
+    inset: 0;
+    position: absolute;
+  }
+
+  .money-dashboard-graphic::after {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    content: "";
+    height: 170px;
+    position: absolute;
+    right: -42px;
+    top: -48px;
+    transform: rotate(18deg);
+    width: 300px;
+  }
+
+  .money-stack-illustration {
+    min-height: 220px;
+    position: relative;
+  }
+
+  .money-note {
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    border-radius: 8px;
+    box-shadow: 0 22px 44px rgba(0, 0, 0, 0.18);
+    display: flex;
+    flex-direction: column;
+    height: 118px;
+    justify-content: space-between;
+    padding: 20px;
+    position: absolute;
+    width: min(320px, 82vw);
+  }
+
+  .money-note::before,
+  .money-note::after {
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    border-radius: 999px;
+    content: "";
+    height: 34px;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 34px;
+  }
+
+  .money-note::before {
+    left: 16px;
+  }
+
+  .money-note::after {
+    right: 16px;
+  }
+
+  .money-note span {
+    color: rgba(255, 255, 255, 0.64);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.18em;
+  }
+
+  .money-note strong {
+    align-self: center;
+    color: #ffffff;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+
+  .note-one {
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--brand-accent, #d9a441) 82%, #ffffff), var(--brand-accent, #d9a441)),
+      repeating-linear-gradient(90deg, transparent 0 16px, rgba(255, 255, 255, 0.12) 16px 17px);
+    right: 52px;
+    top: 28px;
+    transform: rotate(-8deg);
+  }
+
+  .note-two {
+    align-items: flex-start;
+    background:
+      linear-gradient(135deg, rgba(255, 255, 255, 0.19), rgba(255, 255, 255, 0.08)),
+      repeating-linear-gradient(0deg, transparent 0 12px, rgba(255, 255, 255, 0.06) 12px 13px);
+    right: 18px;
+    top: 86px;
+    transform: rotate(7deg);
+  }
+
+  .coin {
+    align-items: center;
+    background: linear-gradient(135deg, #ffe3a3, #d9a441);
+    border: 2px solid rgba(255, 255, 255, 0.55);
+    border-radius: 999px;
+    box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18);
+    color: #172033;
+    display: flex;
+    font-size: 14px;
+    font-weight: 800;
+    height: 48px;
+    justify-content: center;
+    position: absolute;
+    width: 48px;
+  }
+
+  .coin-one {
+    right: 26px;
+    top: 16px;
+  }
+
+  .coin-two {
+    right: 300px;
+    top: 126px;
+  }
+
+  .coin-three {
+    right: 210px;
+    top: 172px;
+  }
+}
+
+@media (max-width: 700px) {
+  .money-stack-illustration {
+    min-height: 190px;
+  }
+
+  .money-note {
+    width: min(270px, 78vw);
+  }
+
+  .note-one {
+    right: 26px;
+    top: 18px;
+  }
+
+  .note-two {
+    right: 8px;
+    top: 78px;
+  }
+
+  .coin-one {
+    right: 10px;
+    top: 8px;
+  }
+
+  .coin-two {
+    right: 232px;
+    top: 118px;
+  }
+
+  .coin-three {
+    right: 142px;
+    top: 154px;
+  }
 }
 
 :root {
