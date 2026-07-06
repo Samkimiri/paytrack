@@ -1,4 +1,4 @@
-import { FormEvent, Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { createContext, FormEvent, Suspense, lazy, useContext, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -11,6 +11,8 @@ import {
   Coins,
   CreditCard,
   Download,
+  Eye,
+  EyeOff,
   FileText,
   Home,
   LayoutDashboard,
@@ -59,6 +61,37 @@ const dateFmt = new Intl.DateTimeFormat("en-KE", {
 
 type TrendPoint = { month: string; income: number };
 type DateRangeFilter = "all" | "today" | "week" | "month" | "custom";
+type MoneyPrivacyContextValue = {
+  totalsVisible: boolean;
+  formatMoney: (value: number) => string;
+};
+
+const hiddenMoneyText = "KES *****";
+const MoneyPrivacyContext = createContext<MoneyPrivacyContextValue>({
+  totalsVisible: true,
+  formatMoney: (value) => money.format(value),
+});
+
+function useMoneyPrivacy() {
+  return useContext(MoneyPrivacyContext);
+}
+
+function MoneyAmount({
+  value,
+  className,
+  style,
+  compact = false,
+}: {
+  value: number;
+  className?: string;
+  style?: React.CSSProperties;
+  compact?: boolean;
+}) {
+  const { totalsVisible, formatMoney } = useMoneyPrivacy();
+  const display = compact && totalsVisible ? money.format(Math.max(value, 0)).replace("KES", "").trim() : formatMoney(value);
+
+  return <span className={className} style={style}>{display}</span>;
+}
 
 const IncomeTrendChart = lazy(async () => {
   const { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } = await import("recharts");
@@ -71,6 +104,8 @@ const IncomeTrendChart = lazy(async () => {
       trend: TrendPoint[];
       accent: string;
     }) {
+      const { totalsVisible, formatMoney } = useMoneyPrivacy();
+
       return (
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={trend} margin={{ left: 0, right: 8, top: 10, bottom: 0 }}>
@@ -82,8 +117,8 @@ const IncomeTrendChart = lazy(async () => {
             </defs>
             <CartesianGrid stroke="#E4E7EC" vertical={false} />
             <XAxis dataKey="month" tickLine={false} axisLine={false} />
-            <YAxis tickFormatter={(value) => `${Number(value) / 1000}k`} tickLine={false} axisLine={false} width={48} />
-            <Tooltip formatter={(value) => money.format(Number(value))} />
+            <YAxis tickFormatter={(value) => (totalsVisible ? `${Number(value) / 1000}k` : "•••")} tickLine={false} axisLine={false} width={48} />
+            <Tooltip formatter={(value) => formatMoney(Number(value))} />
             <Area type="monotone" dataKey="income" stroke={accent} fill="url(#incomeFill)" strokeWidth={2} />
           </AreaChart>
         </ResponsiveContainer>
@@ -276,6 +311,14 @@ function App() {
   const [selectedPayerId, setSelectedPayerId] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
+  const [totalsVisible, setTotalsVisible] = useState(false);
+  const moneyPrivacy = useMemo(
+    () => ({
+      totalsVisible,
+      formatMoney: (value: number) => (totalsVisible ? money.format(value) : hiddenMoneyText),
+    }),
+    [totalsVisible],
+  );
 
   const activeBrand = scope === "graphics" ? businesses.graphics : businesses.scds;
   const visibleBusinessIds = scope === "combined" ? (["scds", "graphics"] as BusinessId[]) : [scope];
@@ -355,8 +398,8 @@ function App() {
       }
     : undefined;
   const confidenceLedger = useMemo(
-    () => buildConfidenceLedger(enrichedPayments, items, auditLog, visibleBusinessIds),
-    [auditLog, enrichedPayments, items, visibleBusinessIds],
+    () => buildConfidenceLedger(enrichedPayments, items, auditLog, visibleBusinessIds, moneyPrivacy.formatMoney),
+    [auditLog, enrichedPayments, items, visibleBusinessIds, moneyPrivacy],
   );
   const followUpLedger = useMemo(
     () => buildFollowUpLedger(items, payers, payments, visibleBusinessIds),
@@ -792,7 +835,8 @@ function App() {
   }
 
   return (
-    <div className="money-pattern min-h-screen transition-colors" style={{ backgroundColor: activeBrand.light }}>
+    <MoneyPrivacyContext.Provider value={moneyPrivacy}>
+      <div className="money-pattern min-h-screen transition-colors" style={{ backgroundColor: activeBrand.light }}>
       <div className="flex min-h-screen">
         <aside
           className={`fixed inset-y-0 left-0 z-40 w-72 transform text-white transition-transform duration-200 lg:static lg:translate-x-0 ${
@@ -909,17 +953,27 @@ function App() {
                   </h2>
                 </div>
               </div>
-              <button
-                onClick={() => {
-                  setEditingPaymentId(null);
-                  setView("add");
-                }}
-                className="money-glow-button inline-flex items-center gap-2 rounded px-4 py-2 text-sm font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-offset-2"
-                style={{ backgroundColor: activeBrand.accent }}
-              >
-                <Plus className="h-4 w-4" />
-                Add Payment
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setTotalsVisible((current) => !current)}
+                  className="inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                  aria-pressed={totalsVisible}
+                >
+                  {totalsVisible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                  <span className="hidden sm:inline">{totalsVisible ? "Hide totals" : "Show totals"}</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setEditingPaymentId(null);
+                    setView("add");
+                  }}
+                  className="money-glow-button inline-flex items-center gap-2 rounded px-4 py-2 text-sm font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-offset-2"
+                  style={{ backgroundColor: activeBrand.accent }}
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Payment
+                </button>
+              </div>
             </div>
           </header>
 
@@ -1036,7 +1090,8 @@ function App() {
           </div>
         </main>
       </div>
-    </div>
+      </div>
+    </MoneyPrivacyContext.Provider>
   );
 }
 
@@ -1060,6 +1115,7 @@ function HomeView({
   onNavigate: (view: View) => void;
 }) {
   const scopeLabel = scope === "combined" ? "Sam Creative businesses" : activeBrand.name;
+  const { formatMoney } = useMoneyPrivacy();
 
   return (
     <div className="space-y-6">
@@ -1106,8 +1162,8 @@ function HomeView({
       </section>
 
       <section className="grid gap-4 lg:grid-cols-3">
-        <MetricCard label="Total Collected" value={money.format(totalCollected)} icon={Banknote} color={activeBrand.accent} />
-        <MetricCard label="Open Balances" value={money.format(outstanding)} icon={Activity} color={activeBrand.alert} />
+        <MetricCard label="Total Collected" value={formatMoney(totalCollected)} icon={Banknote} color={activeBrand.accent} />
+        <MetricCard label="Open Balances" value={formatMoney(outstanding)} icon={Activity} color={activeBrand.alert} />
         <MetricCard label="Audit Confidence" value={`${confidenceScore}%`} icon={ShieldCheck} color={confidenceScore >= 85 ? activeBrand.success : activeBrand.alert} />
       </section>
     </div>
@@ -1232,6 +1288,8 @@ function Dashboard({
   onExportFollowUps: () => void;
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
 }) {
+  const { formatMoney } = useMoneyPrivacy();
+
   return (
     <div className="space-y-6">
       <DateRangeControls
@@ -1251,8 +1309,8 @@ function Dashboard({
       />
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Total Collected" value={money.format(totalCollected)} icon={Banknote} color={activeBrand.accent} />
-        <MetricCard label="Outstanding Balance" value={money.format(outstanding)} icon={Activity} color={activeBrand.alert} />
+        <MetricCard label="Total Collected" value={formatMoney(totalCollected)} icon={Banknote} color={activeBrand.accent} />
+        <MetricCard label="Outstanding Balance" value={formatMoney(outstanding)} icon={Activity} color={activeBrand.alert} />
         <MetricCard label="Transactions" value={String(transactions)} icon={ReceiptText} color={activeBrand.success} />
         <MetricCard label="Audit Health" value={`${confidenceLedger.score}%`} icon={ShieldCheck} color={confidenceLedger.score >= 85 ? activeBrand.success : activeBrand.alert} />
       </section>
@@ -1296,6 +1354,8 @@ function MoneyDashboardGraphic({
   title?: string;
   description?: string;
 }) {
+  const { formatMoney } = useMoneyPrivacy();
+
   return (
     <section
       className="money-dashboard-graphic overflow-hidden rounded border border-slate-200 p-5 text-white shadow-soft md:p-6"
@@ -1314,8 +1374,8 @@ function MoneyDashboardGraphic({
             {description}
           </p>
           <div className="mt-5 grid max-w-2xl gap-3 sm:grid-cols-3">
-            <MoneyGraphicStat label="Collected" value={money.format(totalCollected)} />
-            <MoneyGraphicStat label="Outstanding" value={money.format(outstanding)} />
+            <MoneyGraphicStat label="Collected" value={formatMoney(totalCollected)} />
+            <MoneyGraphicStat label="Outstanding" value={formatMoney(outstanding)} />
             <MoneyGraphicStat label="Records" value={`${transactions} / ${activePayers}`} />
           </div>
         </div>
@@ -1323,7 +1383,7 @@ function MoneyDashboardGraphic({
         <div className="money-stack-illustration" aria-hidden="true">
           <div className="money-note note-one">
             <span>KES</span>
-            <strong>{money.format(Math.max(totalCollected, 0)).replace("KES", "").trim()}</strong>
+            <strong><MoneyAmount value={Math.max(totalCollected, 0)} compact /></strong>
           </div>
           <div className="money-note note-two">
             <span>PAID</span>
@@ -1377,6 +1437,7 @@ function PaymentsView(props: {
   onExport: () => void;
 }) {
   const visiblePayments = props.payments.filter((payment) => !payment.isDeleted);
+  const { formatMoney } = useMoneyPrivacy();
 
   return (
     <Panel title="Payment Records" icon={ReceiptText} action={<IconButton label="Export CSV" icon={Download} onClick={props.onExport} glow />}>
@@ -1456,12 +1517,12 @@ function PaymentsView(props: {
                   </td>
                   <td className="px-3 py-3">{payment.businessName}</td>
                   <td className="px-3 py-3">{payment.itemTitle}</td>
-                  <td className="px-3 py-3 font-semibold tabular">{money.format(payment.amount)}</td>
+                  <td className="px-3 py-3 font-semibold tabular">{formatMoney(payment.amount)}</td>
                   <td className="px-3 py-3">{payment.method}</td>
                   <td className="px-3 py-3">
                     <StatusBadge status={payment.status} brand={props.activeBrand} edited={payment.edited} />
                   </td>
-                  <td className="px-3 py-3 tabular">{money.format(payment.balance)}</td>
+                  <td className="px-3 py-3 tabular">{formatMoney(payment.balance)}</td>
                   <td className="px-3 py-3">
                     <div className="flex gap-1">
                       <IconButton label="Edit payment" icon={Pencil} onClick={() => props.onEdit(payment)} glow />
@@ -1494,6 +1555,8 @@ function TrashView({
   payments: EnrichedPayment[];
   onRestore: (payment: Payment) => void;
 }) {
+  const { formatMoney } = useMoneyPrivacy();
+
   return (
     <Panel title="Trash" icon={Trash2}>
       <div className="mb-4 rounded border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
@@ -1519,7 +1582,7 @@ function TrashView({
                     <td className="px-3 py-3 font-medium text-slate-950">{payment.payerName}</td>
                     <td className="px-3 py-3">{payment.businessName}</td>
                     <td className="px-3 py-3">{payment.itemTitle}</td>
-                    <td className="px-3 py-3 font-semibold tabular">{money.format(payment.amount)}</td>
+                    <td className="px-3 py-3 font-semibold tabular">{formatMoney(payment.amount)}</td>
                     <td className="px-3 py-3">
                       <StatusBadge status="Deleted" brand={activeBrand} />
                     </td>
@@ -1567,6 +1630,8 @@ function PayersView({
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
   onCloseBalance: (itemId: string, reason?: string) => void;
 }) {
+  const { formatMoney } = useMoneyPrivacy();
+
   return (
     <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
       <Panel title="Payer Profiles" icon={UsersRound}>
@@ -1590,8 +1655,8 @@ function PayersView({
                 </div>
                 <p className="mt-2 text-sm text-slate-500">{payer.email || "No email saved"}</p>
                 <div className="mt-3 flex justify-between text-sm tabular">
-                  <span>{money.format(paid)} paid</span>
-                  <span style={{ color: activeBrand.alert }}>{money.format(Math.max(totalDue - paid, 0))} due</span>
+                  <span>{formatMoney(paid)} paid</span>
+                  <span style={{ color: activeBrand.alert }}>{formatMoney(Math.max(totalDue - paid, 0))} due</span>
                 </div>
               </button>
             );
@@ -1649,6 +1714,7 @@ function AddPaymentView({
     notes: editContext?.payment.notes ?? "",
   });
   const [form, setForm] = useState<FormState>(buildInitialForm);
+  const { formatMoney } = useMoneyPrivacy();
   const isEditing = Boolean(editContext);
   const balance = Math.max(Number(form.totalDue || 0) - Number(form.amount || 0) - (editContext?.otherPaidForItem ?? 0), 0);
   const businessPayers = payers.filter((payer) => payer.businessId === form.businessId);
@@ -1745,7 +1811,7 @@ function AddPaymentView({
         <div className="rounded border border-slate-200 bg-slate-50 p-4">
           <p className="text-xs font-semibold uppercase text-slate-500">Calculated balance</p>
           <p className="mt-1 text-2xl font-semibold tabular" style={{ color: balance === 0 ? activeBrand.success : activeBrand.alert }}>
-            {money.format(balance)}
+            {formatMoney(balance)}
           </p>
         </div>
         {!isEditing ? (
@@ -1802,6 +1868,7 @@ function ReportsView({
   onExportFollowUps: () => void;
   onExportMonthlyPdf: () => void | Promise<void>;
 }) {
+  const { formatMoney } = useMoneyPrivacy();
   const byBusiness = Object.values(businesses).map((business) => ({
     business,
     total: scopedPayments
@@ -1824,7 +1891,7 @@ function ReportsView({
           {byBusiness.map(({ business, total }) => (
             <div key={business.id} className="rounded border border-slate-200 bg-white p-5">
               <p className="text-sm font-semibold text-slate-500">{business.name}</p>
-              <p className="mt-3 text-3xl font-semibold tabular" style={{ color: business.accent }}>{money.format(total)}</p>
+              <p className="mt-3 text-3xl font-semibold tabular" style={{ color: business.accent }}>{formatMoney(total)}</p>
               <p className="mt-2 text-sm text-slate-500">Current filtered collection total</p>
             </div>
           ))}
@@ -1832,8 +1899,8 @@ function ReportsView({
       </Panel>
       <Panel title="Follow-Up Export" icon={CalendarDays} action={<IconButton label="Download follow-ups" icon={Download} onClick={onExportFollowUps} />}>
         <div className="grid gap-4 md:grid-cols-3">
-          <MetricMini label="Overdue" value={money.format(followUpLedger.overdueTotal)} color={activeBrand.alert} />
-          <MetricMini label="Due Soon" value={money.format(followUpLedger.dueSoonTotal)} color={activeBrand.success} />
+          <MetricMini label="Overdue" value={formatMoney(followUpLedger.overdueTotal)} color={activeBrand.alert} />
+          <MetricMini label="Due Soon" value={formatMoney(followUpLedger.dueSoonTotal)} color={activeBrand.success} />
           <MetricMini label="Priority Items" value={String(followUpLedger.priorityCount)} color={activeBrand.accent} />
         </div>
         <p className="mt-4 text-sm text-slate-500">
@@ -1848,7 +1915,7 @@ function ReportsView({
               <div className="h-2 rounded bg-slate-100">
                 <div className="h-2 rounded" style={{ width: `${Math.min((entry.income / 150000) * 100, 100)}%`, backgroundColor: activeBrand.accent }} />
               </div>
-              <span className="text-right font-semibold tabular">{money.format(entry.income)}</span>
+              <span className="text-right font-semibold tabular">{formatMoney(entry.income)}</span>
             </div>
           ))}
         </div>
@@ -1928,6 +1995,7 @@ function ProfileDetails({
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
   onCloseBalance: (itemId: string, reason?: string) => void;
 }) {
+  const { formatMoney } = useMoneyPrivacy();
   const payerItems = items.filter((item) => item.payerId === payer.id && isCollectibleItem(item, payments));
   const payerPayments = payments.filter((payment) => payment.payerId === payer.id && !payment.isDeleted);
   const payerItemIds = new Set(payerItems.map((item) => item.id));
@@ -1946,9 +2014,9 @@ function ProfileDetails({
   return (
     <div className="space-y-5">
       <div className="grid gap-3 sm:grid-cols-3">
-        <MetricMini label="Total Due" value={money.format(totalDue)} />
-        <MetricMini label="Paid" value={money.format(paid)} />
-        <MetricMini label="Balance" value={money.format(Math.max(totalDue - paid, 0))} color={activeBrand.alert} />
+        <MetricMini label="Total Due" value={formatMoney(totalDue)} />
+        <MetricMini label="Paid" value={formatMoney(paid)} />
+        <MetricMini label="Balance" value={formatMoney(Math.max(totalDue - paid, 0))} color={activeBrand.alert} />
       </div>
       <div className="rounded border border-slate-200 bg-white p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
@@ -1976,11 +2044,11 @@ function ProfileDetails({
                   <div>
                     <p className="font-medium text-slate-950">{item.title}</p>
                     <p className="mt-1 text-xs text-slate-500">
-                      Paid {money.format(itemPaid)} of {money.format(item.totalAmount)} · Due {dateFmt.format(new Date(item.dueDate))}
+                      Paid {formatMoney(itemPaid)} of {formatMoney(item.totalAmount)} · Due {dateFmt.format(new Date(item.dueDate))}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold tabular" style={{ color: activeBrand.alert }}>{money.format(balance)}</span>
+                    <span className="font-semibold tabular" style={{ color: activeBrand.alert }}>{formatMoney(balance)}</span>
                     <IconButton label="Send WhatsApp reminder" icon={MessageCircle} onClick={() => openWhatsAppReminder(reminder)} glow />
                     <IconButton label="Close balance" icon={ArchiveRestore} onClick={() => onCloseBalance(item.id, "Closed from client profile")} />
                   </div>
@@ -2020,7 +2088,7 @@ function ProfileDetails({
                 <tr key={payment.id} className="border-b border-slate-100">
                   <td className="py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
                   <td>{item?.title}</td>
-                  <td className="font-semibold tabular">{money.format(payment.amount)}</td>
+                  <td className="font-semibold tabular">{formatMoney(payment.amount)}</td>
                   <td><StatusBadge status={payment.status} brand={activeBrand} edited={payment.edited} /></td>
                   <td>{payment.method}</td>
                   <td>
@@ -2057,13 +2125,14 @@ function FollowUpPanel({
   activeBrand: (typeof businesses)[BusinessId];
   onExport: () => void;
 }) {
+  const { formatMoney } = useMoneyPrivacy();
   const priorityItems = ledger.items.filter((item) => item.status !== "scheduled").slice(0, 5);
 
   return (
     <Panel title="Follow-Up & Cashflow Watchlist" icon={CalendarDays} action={<IconButton label="Export follow-ups" icon={Download} onClick={onExport} />}>
       <div className="grid gap-3 sm:grid-cols-3">
-        <MetricMini label="Overdue" value={money.format(ledger.overdueTotal)} color={activeBrand.alert} />
-        <MetricMini label="Due Soon" value={money.format(ledger.dueSoonTotal)} color={activeBrand.success} />
+        <MetricMini label="Overdue" value={formatMoney(ledger.overdueTotal)} color={activeBrand.alert} />
+        <MetricMini label="Due Soon" value={formatMoney(ledger.dueSoonTotal)} color={activeBrand.success} />
         <MetricMini label="Queue" value={String(ledger.priorityCount)} color={activeBrand.accent} />
       </div>
       <div className="mt-4 space-y-2">
@@ -2088,6 +2157,7 @@ function FollowUpRow({
   activeBrand: (typeof businesses)[BusinessId];
   onCloseBalance?: (itemId: string, reason?: string) => void;
 }) {
+  const { formatMoney } = useMoneyPrivacy();
   const isOverdue = item.status === "overdue";
   const color = isOverdue ? activeBrand.alert : activeBrand.success;
   const timing =
@@ -2106,7 +2176,7 @@ function FollowUpRow({
           </p>
         </div>
         <div className="text-right">
-          <p className="font-semibold tabular" style={{ color }}>{money.format(item.balance)}</p>
+          <p className="font-semibold tabular" style={{ color }}>{formatMoney(item.balance)}</p>
           <p className="mt-1 text-xs font-semibold uppercase" style={{ color }}>{timing}</p>
           <button
             className="mt-2 inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
@@ -2141,6 +2211,7 @@ function OverdueView({
   onExportFollowUps: () => void;
   onCloseBalance: (itemId: string, reason?: string) => void;
 }) {
+  const { formatMoney } = useMoneyPrivacy();
   const overdueItems = ledger.items
     .filter((item) => item.status === "overdue")
     .sort((a, b) => b.balance - a.balance || a.daysUntilDue - b.daysUntilDue);
@@ -2149,7 +2220,7 @@ function OverdueView({
     <div className="space-y-6">
       <Panel title="Overdue Balances" icon={AlertTriangle} action={<IconButton label="Download follow-ups" icon={Download} onClick={onExportFollowUps} glow />}>
         <div className="grid gap-4 md:grid-cols-3">
-          <MetricMini label="Overdue Total" value={money.format(ledger.overdueTotal)} color={activeBrand.alert} />
+          <MetricMini label="Overdue Total" value={formatMoney(ledger.overdueTotal)} color={activeBrand.alert} />
           <MetricMini label="Overdue Clients" value={String(overdueItems.length)} color={activeBrand.alert} />
           <MetricMini label="WhatsApp Ready" value={String(overdueItems.filter((item) => normalizeWhatsAppPhone(item.phone)).length)} color={activeBrand.accent} />
         </div>
@@ -2282,6 +2353,8 @@ function Panel({
 }
 
 function CompactPayments({ payments, onPrint }: { payments: EnrichedPayment[]; onPrint: (payment: EnrichedPayment) => void | Promise<void> }) {
+  const { formatMoney } = useMoneyPrivacy();
+
   return (
     <div className="space-y-3">
       {payments.length ? (
@@ -2292,7 +2365,7 @@ function CompactPayments({ payments, onPrint }: { payments: EnrichedPayment[]; o
               <p className="truncate text-sm text-slate-500">{payment.itemTitle}</p>
             </div>
             <div className="text-right">
-              <p className="font-semibold tabular">{money.format(payment.amount)}</p>
+              <p className="font-semibold tabular">{formatMoney(payment.amount)}</p>
               <button className="text-xs font-semibold text-slate-500 hover:text-slate-950" onClick={() => onPrint(payment)}>Receipt</button>
             </div>
           </div>
@@ -2468,6 +2541,7 @@ function buildConfidenceLedger(
   items: Item[],
   auditLog: AuditEntry[],
   visibleBusinessIds: BusinessId[],
+  formatMoney: (value: number) => string,
 ): ConfidenceLedger {
   const issues: ConfidenceIssue[] = [];
   const scopedPayments = payments.filter((payment) => visibleBusinessIds.includes(payment.businessId));
@@ -2525,7 +2599,7 @@ function buildConfidenceLedger(
       issues.push({
         id: `duplicate-${payment.id}`,
         title: "Possible duplicate payment",
-        detail: `${money.format(payment.amount)} appears more than once for this payer on ${dateFmt.format(new Date(payment.date))}.`,
+        detail: `${formatMoney(payment.amount)} appears more than once for this payer on ${dateFmt.format(new Date(payment.date))}.`,
         severity: "warning",
         paymentId: payment.id,
         payerName: payment.payerName,
@@ -2546,7 +2620,7 @@ function buildConfidenceLedger(
         issues.push({
           id: `overpaid-${item.id}`,
           title: "Payment exceeds balance",
-          detail: `${item.title} is overpaid by ${money.format(paid - item.totalAmount)}.`,
+          detail: `${item.title} is overpaid by ${formatMoney(paid - item.totalAmount)}.`,
           severity: "critical",
           paymentId: representativePayment?.id,
           itemId: item.id,
@@ -2558,7 +2632,7 @@ function buildConfidenceLedger(
         issues.push({
           id: `overdue-${item.id}`,
           title: "Outstanding balance past due",
-          detail: `${item.title} still has ${money.format(balance)} due after ${dateFmt.format(new Date(item.dueDate))}.`,
+          detail: `${item.title} still has ${formatMoney(balance)} due after ${dateFmt.format(new Date(item.dueDate))}.`,
           severity: "warning",
           paymentId: representativePayment?.id,
           itemId: item.id,
