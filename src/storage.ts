@@ -85,6 +85,9 @@ function normalizeData(data: Partial<AppData> | null | undefined): AppData {
           installmentCount: Number(item.installmentCount ?? 1),
           installmentAmount: Number(item.installmentAmount ?? item.totalAmount ?? 0),
           installmentFrequency: item.installmentFrequency ?? "once",
+          balanceClosed: Boolean(item.balanceClosed),
+          balanceClosedAt: item.balanceClosedAt,
+          balanceClosedReason: item.balanceClosedReason,
         }))
       : defaultAppData.items,
     payments: Array.isArray(data?.payments) ? data.payments : defaultAppData.payments,

@@ -27,12 +27,18 @@ create table if not exists public.items (
   installment_count integer not null default 1 check (installment_count >= 1),
   installment_amount numeric(14, 2) not null default 0 check (installment_amount >= 0),
   installment_frequency text not null default 'once' check (installment_frequency in ('once', 'weekly', 'monthly')),
+  balance_closed boolean not null default false,
+  balance_closed_at timestamptz,
+  balance_closed_reason text,
   created_at timestamptz not null default now()
 );
 
 alter table public.items add column if not exists installment_count integer not null default 1 check (installment_count >= 1);
 alter table public.items add column if not exists installment_amount numeric(14, 2) not null default 0 check (installment_amount >= 0);
 alter table public.items add column if not exists installment_frequency text not null default 'once' check (installment_frequency in ('once', 'weekly', 'monthly'));
+alter table public.items add column if not exists balance_closed boolean not null default false;
+alter table public.items add column if not exists balance_closed_at timestamptz;
+alter table public.items add column if not exists balance_closed_reason text;
 
 create table if not exists public.payments (
   id uuid primary key default gen_random_uuid(),
@@ -201,11 +207,21 @@ select
   i.installment_count,
   i.installment_amount,
   i.installment_frequency,
+  i.balance_closed,
+  i.balance_closed_at,
+  i.balance_closed_reason,
   coalesce(sum(p.amount) filter (where p.is_deleted = false), 0) as total_paid,
   i.total_amount - coalesce(sum(p.amount) filter (where p.is_deleted = false), 0) as balance
 from public.items i
 left join public.payments p on p.item_id = i.id
-group by i.business_id, i.payer_id, i.id, i.title, i.total_amount, i.installment_count, i.installment_amount, i.installment_frequency;
+where i.balance_closed = false
+  and exists (
+    select 1
+    from public.payments active_payment
+    where active_payment.item_id = i.id
+      and active_payment.is_deleted = false
+  )
+group by i.business_id, i.payer_id, i.id, i.title, i.total_amount, i.installment_count, i.installment_amount, i.installment_frequency, i.balance_closed, i.balance_closed_at, i.balance_closed_reason;
 
 create or replace view public.overdue_balances as
 select

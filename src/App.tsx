@@ -151,6 +151,7 @@ function buildBalanceReminderMessage(item: FollowUpItem) {
     "",
     `This is a friendly reminder from ${business.name} about your balance of ${money.format(item.balance)} for ${item.itemTitle}.`,
     `The payment is ${timing}.`,
+    `You can pay via Buy Goods & Services Till: ${balanceTillNumber}.`,
     "",
     "Please let us know once you have completed the payment, or if you need us to confirm the payment details.",
     "",
@@ -248,6 +249,7 @@ type EditPaymentContext = {
 
 const today = new Date().toISOString().slice(0, 10);
 const trashRetentionDays = 30;
+const balanceTillNumber = "9322260";
 
 function App() {
   const [scope, setScope] = useState<BusinessScope>("combined");
@@ -286,6 +288,7 @@ function App() {
         const activePaid = payments
           .filter((entry) => entry.itemId === payment.itemId && !entry.isDeleted)
           .reduce((sum, entry) => sum + entry.amount, 0);
+        const itemTotal = isCollectibleItem(item, payments) ? (item?.totalAmount ?? 0) : activePaid;
         return {
           ...payment,
           payerName: payer?.fullName ?? "Unknown payer",
@@ -293,7 +296,7 @@ function App() {
           payerEmail: payer?.email ?? "",
           itemTitle: item?.title ?? "Unassigned item",
           businessName: businesses[payment.businessId].shortName,
-          balance: Math.max((item?.totalAmount ?? 0) - activePaid, 0),
+          balance: Math.max(itemTotal - activePaid, 0),
           dueDate: item?.dueDate ?? payment.date,
           totalAmount: item?.totalAmount ?? payment.amount,
         };
@@ -330,6 +333,7 @@ function App() {
   const totalCollected = activePayments.reduce((sum, payment) => sum + payment.amount, 0);
   const outstanding = items
     .filter((item) => visibleBusinessIds.includes(item.businessId))
+    .filter((item) => isCollectibleItem(item, payments))
     .reduce((sum, item) => {
       const paid = payments
         .filter((payment) => payment.itemId === item.id && !payment.isDeleted)
@@ -455,6 +459,7 @@ function App() {
       installmentCount,
       installmentAmount: Math.ceil(totalDue / installmentCount),
       installmentFrequency: state.installmentFrequency as Item["installmentFrequency"],
+      balanceClosed: false,
       createdAt: new Date().toISOString(),
     };
     const paidForItem = payments
@@ -504,6 +509,7 @@ function App() {
     const paymentDate = state.date || today;
     const dueDate = state.dueDate || today;
     const status: PaymentStatus = totalDue - otherPaidForItem - amount <= 0 ? "Paid" : amount > 0 ? "Partial" : "Pending";
+    const shouldReopenBalance = currentItem.balanceClosed && totalDue - otherPaidForItem - amount > 0;
     const previousValues: Record<string, unknown> = {};
     const changedFields: string[] = [];
     const trackChange = (field: string, previous: unknown, next: unknown) => {
@@ -524,6 +530,9 @@ function App() {
     trackChange("due_date", currentItem.dueDate, dueDate);
     trackChange("installment_count", currentItem.installmentCount, installmentCount);
     trackChange("installment_frequency", currentItem.installmentFrequency, state.installmentFrequency);
+    if (shouldReopenBalance) {
+      trackChange("balance_closed", currentItem.balanceClosed, false);
+    }
 
     if (!changedFields.length) {
       setEditingPaymentId(null);
@@ -542,6 +551,9 @@ function App() {
               installmentCount,
               installmentAmount: Math.ceil(totalDue / installmentCount),
               installmentFrequency: state.installmentFrequency as Item["installmentFrequency"],
+              balanceClosed: shouldReopenBalance ? false : item.balanceClosed,
+              balanceClosedAt: shouldReopenBalance ? undefined : item.balanceClosedAt,
+              balanceClosedReason: shouldReopenBalance ? undefined : item.balanceClosedReason,
             }
           : item,
       ),
@@ -582,6 +594,7 @@ function App() {
   }
 
   function softDelete(payment: Payment) {
+    const activePaymentsForItem = payments.filter((entry) => entry.itemId === payment.itemId && entry.id !== payment.id && !entry.isDeleted);
     setPayments((current) =>
       current.map((entry) =>
         entry.id === payment.id
@@ -589,7 +602,25 @@ function App() {
           : entry,
       ),
     );
+    if (!activePaymentsForItem.length) {
+      closeItemBalance(payment.itemId, "Closed after deleting the payment record");
+    }
     recordAudit(payment.id, "deleted", ["is_deleted", "deleted_at"], { is_deleted: false, deleted_at: payment.deletedAt });
+  }
+
+  function closeItemBalance(itemId: string, reason = "Balance closed manually") {
+    setItems((current) =>
+      current.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              balanceClosed: true,
+              balanceClosedAt: new Date().toISOString(),
+              balanceClosedReason: reason,
+            }
+          : item,
+      ),
+    );
   }
 
   function restorePayment(payment: Payment) {
@@ -598,6 +629,13 @@ function App() {
         entry.id === payment.id
           ? { ...entry, isDeleted: false, deletedAt: undefined, updatedAt: new Date().toISOString() }
           : entry,
+      ),
+    );
+    setItems((current) =>
+      current.map((item) =>
+        item.id === payment.itemId && item.balanceClosed
+          ? { ...item, balanceClosed: false, balanceClosedAt: undefined, balanceClosedReason: undefined }
+          : item,
       ),
     );
     recordAudit(payment.id, "restored", ["is_deleted", "deleted_at"], { is_deleted: true, deleted_at: payment.deletedAt });
@@ -618,6 +656,7 @@ function App() {
     doc.setFontSize(22);
     doc.text("Payment Receipt", 18, 52);
     doc.setFontSize(11);
+    const receiptDoc = doc as unknown as { splitTextToSize: (text: string, maxWidth: number) => string[] };
     const rows = [
       ["Receipt ID", payment.id],
       ["Date", dateFmt.format(new Date(payment.date))],
@@ -629,17 +668,22 @@ function App() {
       ["Status", payment.balance === 0 ? "PAID" : "BALANCE DUE"],
       ["Remaining Balance", money.format(payment.balance)],
     ];
-    rows.forEach(([label, value], index) => {
-      const y = 70 + index * 10;
+    let y = 70;
+    rows.forEach(([label, value]) => {
+      const wrappedValue = receiptDoc.splitTextToSize(String(value), 112);
       doc.setTextColor("#667085");
       doc.text(label, 18, y);
       doc.setTextColor("#172033");
-      doc.text(value, 74, y);
+      wrappedValue.forEach((line, lineIndex) => {
+        doc.text(line, 74, y + lineIndex * 6);
+      });
+      y += Math.max(wrappedValue.length, 1) * 6 + 4;
     });
     doc.setDrawColor(brand.accent);
-    doc.line(18, 170, 192, 170);
+    const footerY = Math.max(y + 10, 170);
+    doc.line(18, footerY, 192, footerY);
     doc.setTextColor("#667085");
-    doc.text("Generated by Sam Creative Payment Tracker", 18, 184);
+    doc.text("Generated by Sam Creative Payment Tracker", 18, footerY + 14);
     doc.save(`${payment.payerName.replace(/\s+/g, "-")}-${payment.id}.pdf`);
   }
 
@@ -941,6 +985,7 @@ function App() {
                 activeBrand={activeBrand}
                 ledger={followUpLedger}
                 onExportFollowUps={exportFollowUps}
+                onCloseBalance={closeItemBalance}
               />
             )}
             {view === "payers" && (
@@ -953,6 +998,7 @@ function App() {
                 setSelectedPayerId={setSelectedPayerId}
                 auditLog={auditLog}
                 onPrint={printReceipt}
+                onCloseBalance={closeItemBalance}
               />
             )}
             {view === "add" && (
@@ -1509,6 +1555,7 @@ function PayersView({
   setSelectedPayerId,
   auditLog,
   onPrint,
+  onCloseBalance,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
   payers: Payer[];
@@ -1518,16 +1565,18 @@ function PayersView({
   setSelectedPayerId: (id: string) => void;
   auditLog: AuditEntry[];
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
+  onCloseBalance: (itemId: string, reason?: string) => void;
 }) {
   return (
     <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
       <Panel title="Payer Profiles" icon={UsersRound}>
         <div className="space-y-3">
           {payers.length ? payers.map((payer) => {
-            const payerItems = items.filter((item) => item.payerId === payer.id);
+            const payerItems = items.filter((item) => item.payerId === payer.id && isCollectibleItem(item, payments));
+            const payerItemIds = new Set(payerItems.map((item) => item.id));
             const totalDue = payerItems.reduce((sum, item) => sum + item.totalAmount, 0);
             const paid = payments
-              .filter((payment) => payment.payerId === payer.id && !payment.isDeleted)
+              .filter((payment) => payment.payerId === payer.id && payerItemIds.has(payment.itemId) && !payment.isDeleted)
               .reduce((sum, payment) => sum + payment.amount, 0);
             return (
               <button
@@ -1555,7 +1604,7 @@ function PayersView({
       </Panel>
       <Panel title={selectedPayer ? selectedPayer.fullName : "Profile Details"} icon={BriefcaseBusiness}>
         {selectedPayer ? (
-          <ProfileDetails payer={selectedPayer} items={items} payments={payments} auditLog={auditLog} activeBrand={activeBrand} onPrint={onPrint} />
+          <ProfileDetails payer={selectedPayer} items={items} payments={payments} auditLog={auditLog} activeBrand={activeBrand} onPrint={onPrint} onCloseBalance={onCloseBalance} />
         ) : (
           <p className="text-sm text-slate-500">Select a payer to inspect balances, history, and audit entries.</p>
         )}
@@ -1869,6 +1918,7 @@ function ProfileDetails({
   auditLog,
   activeBrand,
   onPrint,
+  onCloseBalance,
 }: {
   payer: Payer;
   items: Item[];
@@ -1876,12 +1926,22 @@ function ProfileDetails({
   auditLog: AuditEntry[];
   activeBrand: (typeof businesses)[BusinessId];
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
+  onCloseBalance: (itemId: string, reason?: string) => void;
 }) {
-  const payerItems = items.filter((item) => item.payerId === payer.id);
+  const payerItems = items.filter((item) => item.payerId === payer.id && isCollectibleItem(item, payments));
   const payerPayments = payments.filter((payment) => payment.payerId === payer.id && !payment.isDeleted);
+  const payerItemIds = new Set(payerItems.map((item) => item.id));
   const totalDue = payerItems.reduce((sum, item) => sum + item.totalAmount, 0);
-  const paid = payerPayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const paid = payerPayments.filter((payment) => payerItemIds.has(payment.itemId)).reduce((sum, payment) => sum + payment.amount, 0);
   const payerAudit = auditLog.filter((entry) => payerPayments.some((payment) => payment.id === entry.paymentId));
+  const openBalances = payerItems
+    .map((item) => {
+      const paidForItem = payments
+        .filter((payment) => payment.itemId === item.id && !payment.isDeleted)
+        .reduce((sum, payment) => sum + payment.amount, 0);
+      return { item, paid: paidForItem, balance: Math.max(item.totalAmount - paidForItem, 0) };
+    })
+    .filter((entry) => entry.balance > 0);
 
   return (
     <div className="space-y-5">
@@ -1889,6 +1949,50 @@ function ProfileDetails({
         <MetricMini label="Total Due" value={money.format(totalDue)} />
         <MetricMini label="Paid" value={money.format(paid)} />
         <MetricMini label="Balance" value={money.format(Math.max(totalDue - paid, 0))} color={activeBrand.alert} />
+      </div>
+      <div className="rounded border border-slate-200 bg-white p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="font-semibold text-slate-950">Balance management</p>
+          <span className="text-xs font-semibold uppercase text-slate-400">{openBalances.length} open</span>
+        </div>
+        <div className="space-y-2">
+          {openBalances.length ? (
+            openBalances.map(({ item, paid: itemPaid, balance }) => {
+              const reminder: FollowUpItem = {
+                id: item.id,
+                businessId: item.businessId,
+                payerName: payer.fullName,
+                phone: payer.phone,
+                email: payer.email,
+                itemTitle: item.title,
+                dueDate: item.dueDate,
+                balance,
+                daysUntilDue: Math.ceil((new Date(`${item.dueDate}T00:00:00`).getTime() - new Date(`${today}T00:00:00`).getTime()) / 86_400_000),
+                status: new Date(`${item.dueDate}T00:00:00`) < new Date(`${today}T00:00:00`) ? "overdue" : "scheduled",
+                lastPaymentDate: payerPayments.filter((payment) => payment.itemId === item.id).sort((a, b) => b.date.localeCompare(a.date))[0]?.date,
+              };
+              return (
+                <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded border border-slate-200 bg-slate-50 p-3">
+                  <div>
+                    <p className="font-medium text-slate-950">{item.title}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Paid {money.format(itemPaid)} of {money.format(item.totalAmount)} · Due {dateFmt.format(new Date(item.dueDate))}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold tabular" style={{ color: activeBrand.alert }}>{money.format(balance)}</span>
+                    <IconButton label="Send WhatsApp reminder" icon={MessageCircle} onClick={() => openWhatsAppReminder(reminder)} glow />
+                    <IconButton label="Close balance" icon={ArchiveRestore} onClick={() => onCloseBalance(item.id, "Closed from client profile")} />
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+              No open balances for this profile.
+            </div>
+          )}
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="min-w-[680px] w-full text-left text-sm">
@@ -1975,7 +2079,15 @@ function FollowUpPanel({
   );
 }
 
-function FollowUpRow({ item, activeBrand }: { item: FollowUpItem; activeBrand: (typeof businesses)[BusinessId] }) {
+function FollowUpRow({
+  item,
+  activeBrand,
+  onCloseBalance,
+}: {
+  item: FollowUpItem;
+  activeBrand: (typeof businesses)[BusinessId];
+  onCloseBalance?: (itemId: string, reason?: string) => void;
+}) {
   const isOverdue = item.status === "overdue";
   const color = isOverdue ? activeBrand.alert : activeBrand.success;
   const timing =
@@ -2004,6 +2116,14 @@ function FollowUpRow({ item, activeBrand }: { item: FollowUpItem; activeBrand: (
             <MessageCircle className="h-3.5 w-3.5" />
             WhatsApp
           </button>
+          {onCloseBalance && (
+            <button
+              className="mt-2 ml-2 inline-flex items-center rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+              onClick={() => onCloseBalance(item.id, "Closed from balance manager")}
+            >
+              Close
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -2014,10 +2134,12 @@ function OverdueView({
   activeBrand,
   ledger,
   onExportFollowUps,
+  onCloseBalance,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
   ledger: FollowUpLedger;
   onExportFollowUps: () => void;
+  onCloseBalance: (itemId: string, reason?: string) => void;
 }) {
   const overdueItems = ledger.items
     .filter((item) => item.status === "overdue")
@@ -2033,7 +2155,7 @@ function OverdueView({
         </div>
         <div className="mt-5 space-y-2">
           {overdueItems.length ? (
-            overdueItems.map((item) => <FollowUpRow key={item.id} item={item} activeBrand={activeBrand} />)
+            overdueItems.map((item) => <FollowUpRow key={item.id} item={item} activeBrand={activeBrand} onCloseBalance={onCloseBalance} />)
           ) : (
             <div className="rounded border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
               No overdue balances in the selected scope.
@@ -2263,6 +2385,11 @@ function isPaymentInDateRange(dateValue: string, range: DateRangeFilter, customF
   return paymentDate >= start && paymentDate <= end;
 }
 
+function isCollectibleItem(item: Item | undefined, payments: Payment[]) {
+  if (!item || item.balanceClosed) return false;
+  return payments.some((payment) => payment.itemId === item.id && !payment.isDeleted);
+}
+
 function buildTrend(payments: EnrichedPayment[]) {
   const current = new Date(`${today}T00:00:00`);
   return Array.from({ length: 6 }, (_, index) => {
@@ -2289,6 +2416,7 @@ function buildFollowUpLedger(
   const current = new Date(`${today}T00:00:00`);
   const followUps = items
     .filter((item) => visibleBusinessIds.includes(item.businessId))
+    .filter((item) => isCollectibleItem(item, payments))
     .map((item) => {
       const payer = payers.find((entry) => entry.id === item.payerId);
       const itemPayments = payments
@@ -2407,6 +2535,7 @@ function buildConfidenceLedger(
 
   items
     .filter((item) => visibleBusinessIds.includes(item.businessId))
+    .filter((item) => !item.balanceClosed)
     .forEach((item) => {
       const itemPayments = activePayments.filter((payment) => payment.itemId === item.id);
       const paid = itemPayments.reduce((sum, payment) => sum + payment.amount, 0);

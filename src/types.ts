@@ -37,6 +37,9 @@ export type Item = {
   installmentCount: number;
   installmentAmount: number;
   installmentFrequency: "once" | "weekly" | "monthly";
+  balanceClosed?: boolean;
+  balanceClosedAt?: string;
+  balanceClosedReason?: string;
   createdAt: string;
 };
 
