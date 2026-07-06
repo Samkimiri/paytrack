@@ -2,6 +2,7 @@ import type { AppData, StorageBackend } from "./types";
 
 const STORAGE_KEY = "sam-creative-paytrack-state-v1";
 const SNAPSHOT_ID = "primary";
+const TRASH_RETENTION_DAYS = 30;
 
 export const defaultAppData: AppData = {
   payers: [],
@@ -113,11 +114,49 @@ function removeLegacyDemoRecords(data: AppData): SanitizedData {
   };
 }
 
+function purgeExpiredTrash(data: AppData): SanitizedData {
+  const cutoff = Date.now() - TRASH_RETENTION_DAYS * 86_400_000;
+  const payments = data.payments
+    .map((payment) =>
+      payment.isDeleted && !payment.deletedAt
+        ? { ...payment, deletedAt: payment.updatedAt || payment.createdAt }
+        : payment,
+    )
+    .filter((payment) => {
+      if (!payment.isDeleted) return true;
+      const deletedAt = payment.deletedAt ? new Date(payment.deletedAt).getTime() : 0;
+      return Number.isNaN(deletedAt) || deletedAt > cutoff;
+    });
+  const paymentIds = new Set(payments.map((payment) => payment.id));
+  const auditLog = data.auditLog.filter((entry) => paymentIds.has(entry.paymentId));
+  const changed = payments.length !== data.payments.length || auditLog.length !== data.auditLog.length ||
+    payments.some((payment, index) => payment !== data.payments[index]);
+
+  return {
+    data: {
+      ...data,
+      payments,
+      auditLog,
+    },
+    changed,
+  };
+}
+
+function sanitizeData(data: AppData): SanitizedData {
+  const withoutDemo = removeLegacyDemoRecords(data);
+  const withoutExpiredTrash = purgeExpiredTrash(withoutDemo.data);
+
+  return {
+    data: withoutExpiredTrash.data,
+    changed: withoutDemo.changed || withoutExpiredTrash.changed,
+  };
+}
+
 function loadBrowserData(): AppData {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     const data = raw ? normalizeData(JSON.parse(raw) as Partial<AppData>) : defaultAppData;
-    const sanitized = removeLegacyDemoRecords(data);
+    const sanitized = sanitizeData(data);
 
     if (sanitized.changed) {
       saveBrowserData(sanitized.data);
@@ -146,7 +185,7 @@ async function loadSupabaseData(): Promise<SanitizedData | null> {
   }
 
   const rows = (await response.json()) as SupabaseSnapshot[];
-  return rows[0]?.payload ? removeLegacyDemoRecords(normalizeData(rows[0].payload)) : null;
+  return rows[0]?.payload ? sanitizeData(normalizeData(rows[0].payload)) : null;
 }
 
 async function saveSupabaseData(data: AppData): Promise<void> {
@@ -192,14 +231,15 @@ export async function loadAppData(): Promise<LoadResult> {
 }
 
 export async function saveAppData(data: AppData): Promise<PersistResult> {
-  saveBrowserData(data);
+  const sanitized = sanitizeData(data).data;
+  saveBrowserData(sanitized);
 
   if (!canUseSupabase()) {
     return { backend: "browser", error: "Supabase is not configured" };
   }
 
   try {
-    await saveSupabaseData(data);
+    await saveSupabaseData(sanitized);
     return { backend: "supabase" };
   } catch (error) {
     return {

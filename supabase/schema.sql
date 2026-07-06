@@ -40,8 +40,11 @@ create table if not exists public.payments (
   notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  is_deleted boolean not null default false
+  is_deleted boolean not null default false,
+  deleted_at timestamptz
 );
+
+alter table public.payments add column if not exists deleted_at timestamptz;
 
 create table if not exists public.payment_audit_log (
   id uuid primary key default gen_random_uuid(),
@@ -125,6 +128,10 @@ begin
   if old.is_deleted is distinct from new.is_deleted then
     changed := changed || 'is_deleted';
     previous := previous || jsonb_build_object('is_deleted', old.is_deleted);
+  end if;
+  if old.deleted_at is distinct from new.deleted_at then
+    changed := changed || 'deleted_at';
+    previous := previous || jsonb_build_object('deleted_at', old.deleted_at);
   end if;
 
   new.updated_at := now();

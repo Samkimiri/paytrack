@@ -50,6 +50,7 @@ export type Payment = {
   createdAt: string;
   updatedAt: string;
   isDeleted: boolean;
+  deletedAt?: string;
   edited: boolean;
 };
 

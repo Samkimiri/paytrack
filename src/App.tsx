@@ -142,6 +142,7 @@ const nav = [
   { id: "payments", label: "Payments", icon: ReceiptText },
   { id: "payers", label: "Clients/Students", icon: UsersRound },
   { id: "add", label: "Add Payment", icon: Plus },
+  { id: "trash", label: "Trash", icon: Trash2 },
   { id: "reports", label: "Reports", icon: FileText },
   { id: "settings", label: "Settings", icon: Settings },
 ] as const;
@@ -208,6 +209,7 @@ type FormState = {
 };
 
 const today = new Date().toISOString().slice(0, 10);
+const trashRetentionDays = 30;
 
 function App() {
   const [scope, setScope] = useState<BusinessScope>("combined");
@@ -255,6 +257,7 @@ function App() {
     () =>
       enrichedPayments
         .filter((payment) => visibleBusinessIds.includes(payment.businessId))
+        .filter((payment) => !payment.isDeleted)
         .filter((payment) => {
           const haystack = `${payment.payerName} ${payment.itemTitle} ${payment.mpesaCode ?? ""}`.toLowerCase();
           return haystack.includes(query.toLowerCase());
@@ -264,9 +267,17 @@ function App() {
         .sort((a, b) => b.date.localeCompare(a.date)),
     [enrichedPayments, methodFilter, query, statusFilter, visibleBusinessIds],
   );
+  const trashPayments = useMemo(
+    () =>
+      enrichedPayments
+        .filter((payment) => visibleBusinessIds.includes(payment.businessId))
+        .filter((payment) => payment.isDeleted)
+        .sort((a, b) => (b.deletedAt ?? b.updatedAt).localeCompare(a.deletedAt ?? a.updatedAt)),
+    [enrichedPayments, visibleBusinessIds],
+  );
 
   const scopedPayers = payers.filter((payer) => visibleBusinessIds.includes(payer.businessId));
-  const activePayments = scopedPayments.filter((payment) => !payment.isDeleted);
+  const activePayments = scopedPayments;
   const totalCollected = activePayments.reduce((sum, payment) => sum + payment.amount, 0);
   const outstanding = items
     .filter((item) => visibleBusinessIds.includes(item.businessId))
@@ -416,22 +427,22 @@ function App() {
     setPayments((current) =>
       current.map((entry) =>
         entry.id === payment.id
-          ? { ...entry, isDeleted: true, updatedAt: new Date().toISOString() }
+          ? { ...entry, isDeleted: true, deletedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
           : entry,
       ),
     );
-    recordAudit(payment.id, "deleted", ["is_deleted"], { is_deleted: false });
+    recordAudit(payment.id, "deleted", ["is_deleted", "deleted_at"], { is_deleted: false, deleted_at: payment.deletedAt });
   }
 
   function restorePayment(payment: Payment) {
     setPayments((current) =>
       current.map((entry) =>
         entry.id === payment.id
-          ? { ...entry, isDeleted: false, updatedAt: new Date().toISOString() }
+          ? { ...entry, isDeleted: false, deletedAt: undefined, updatedAt: new Date().toISOString() }
           : entry,
       ),
     );
-    recordAudit(payment.id, "restored", ["is_deleted"], { is_deleted: true });
+    recordAudit(payment.id, "restored", ["is_deleted", "deleted_at"], { is_deleted: true, deleted_at: payment.deletedAt });
   }
 
   async function printReceipt(payment: EnrichedPayment) {
@@ -475,7 +486,7 @@ function App() {
   }
 
   function exportCsv() {
-    const header = ["date", "payer", "business", "item", "amount", "method", "status", "balance", "deleted"];
+    const header = ["date", "payer", "business", "item", "amount", "method", "status", "balance"];
     const rows = scopedPayments.map((payment) => [
       payment.date,
       payment.payerName,
@@ -485,7 +496,6 @@ function App() {
       payment.method,
       payment.status,
       payment.balance,
-      payment.isDeleted,
     ]);
     const csv = [header, ...rows]
       .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
@@ -661,9 +671,15 @@ function App() {
                 payments={scopedPayments}
                 confidenceLedger={confidenceLedger}
                 onDelete={softDelete}
-                onRestore={restorePayment}
                 onPrint={printReceipt}
                 onExport={exportCsv}
+              />
+            )}
+            {view === "trash" && (
+              <TrashView
+                activeBrand={activeBrand}
+                payments={trashPayments}
+                onRestore={restorePayment}
               />
             )}
             {view === "payers" && (
@@ -769,7 +785,6 @@ function PaymentsView(props: {
   payments: EnrichedPayment[];
   confidenceLedger: ConfidenceLedger;
   onDelete: (payment: Payment) => void;
-  onRestore: (payment: Payment) => void;
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
   onExport: () => void;
 }) {
@@ -829,17 +844,13 @@ function PaymentsView(props: {
                   <td className="px-3 py-3 font-semibold tabular">{money.format(payment.amount)}</td>
                   <td className="px-3 py-3">{payment.method}</td>
                   <td className="px-3 py-3">
-                    <StatusBadge status={payment.isDeleted ? "Deleted" : payment.status} brand={props.activeBrand} edited={payment.edited} />
+                    <StatusBadge status={payment.status} brand={props.activeBrand} edited={payment.edited} />
                   </td>
                   <td className="px-3 py-3 tabular">{money.format(payment.balance)}</td>
                   <td className="px-3 py-3">
                     <div className="flex gap-1">
                       <IconButton label="Print receipt" icon={Printer} onClick={() => props.onPrint(payment)} />
-                      {payment.isDeleted ? (
-                        <IconButton label="Restore" icon={ArchiveRestore} onClick={() => props.onRestore(payment)} />
-                      ) : (
-                        <IconButton label="Soft delete" icon={Trash2} onClick={() => props.onDelete(payment)} />
-                      )}
+                      <IconButton label="Move to trash" icon={Trash2} onClick={() => props.onDelete(payment)} />
                     </div>
                   </td>
                 </tr>
@@ -848,6 +859,67 @@ function PaymentsView(props: {
               <tr>
                 <td colSpan={9} className="px-3 py-10 text-center text-sm text-slate-500">
                   No payment records found. Add the first payment to start tracking balances.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
+function TrashView({
+  activeBrand,
+  payments,
+  onRestore,
+}: {
+  activeBrand: (typeof businesses)[BusinessId];
+  payments: EnrichedPayment[];
+  onRestore: (payment: Payment) => void;
+}) {
+  return (
+    <Panel title="Trash" icon={Trash2}>
+      <div className="mb-4 rounded border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+        Deleted payments stay here for {trashRetentionDays} days. After that, expired trash is permanently removed as a group during online sync.
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-[900px] w-full border-collapse text-left text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+              {["Deleted", "Payer", "Business", "Item", "Amount", "Status", "Retention", "Actions"].map((head) => (
+                <th key={head} className="px-3 py-3 font-semibold">{head}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {payments.length ? (
+              payments.map((payment) => {
+                const daysLeft = daysUntilTrashPurge(payment);
+
+                return (
+                  <tr key={payment.id} className="border-b border-slate-100 bg-white">
+                    <td className="px-3 py-3 tabular">{dateFmt.format(new Date(payment.deletedAt ?? payment.updatedAt))}</td>
+                    <td className="px-3 py-3 font-medium text-slate-950">{payment.payerName}</td>
+                    <td className="px-3 py-3">{payment.businessName}</td>
+                    <td className="px-3 py-3">{payment.itemTitle}</td>
+                    <td className="px-3 py-3 font-semibold tabular">{money.format(payment.amount)}</td>
+                    <td className="px-3 py-3">
+                      <StatusBadge status="Deleted" brand={activeBrand} />
+                    </td>
+                    <td className="px-3 py-3 text-slate-600">
+                      {daysLeft <= 0 ? "Deletes on next sync" : `${daysLeft} day${daysLeft === 1 ? "" : "s"} left`}
+                    </td>
+                    <td className="px-3 py-3">
+                      <IconButton label="Restore" icon={ArchiveRestore} onClick={() => onRestore(payment)} />
+                    </td>
+                  </tr>
+                );
+              })
+            ) : (
+              <tr>
+                <td colSpan={8} className="px-3 py-10 text-center text-sm text-slate-500">
+                  Trash is empty.
                 </td>
               </tr>
             )}
@@ -1146,9 +1218,9 @@ function ProfileDetails({
   activeBrand: (typeof businesses)[BusinessId];
 }) {
   const payerItems = items.filter((item) => item.payerId === payer.id);
-  const payerPayments = payments.filter((payment) => payment.payerId === payer.id);
+  const payerPayments = payments.filter((payment) => payment.payerId === payer.id && !payment.isDeleted);
   const totalDue = payerItems.reduce((sum, item) => sum + item.totalAmount, 0);
-  const paid = payerPayments.filter((payment) => !payment.isDeleted).reduce((sum, payment) => sum + payment.amount, 0);
+  const paid = payerPayments.reduce((sum, payment) => sum + payment.amount, 0);
   const payerAudit = auditLog.filter((entry) => payerPayments.some((payment) => payment.id === entry.paymentId));
 
   return (
@@ -1171,7 +1243,7 @@ function ProfileDetails({
                   <td className="py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
                   <td>{item?.title}</td>
                   <td className="font-semibold tabular">{money.format(payment.amount)}</td>
-                  <td><StatusBadge status={payment.isDeleted ? "Deleted" : payment.status} brand={activeBrand} edited={payment.edited} /></td>
+                  <td><StatusBadge status={payment.status} brand={activeBrand} edited={payment.edited} /></td>
                   <td>{payment.method}</td>
                 </tr>
               );
@@ -1430,6 +1502,14 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </label>
   );
+}
+
+function daysUntilTrashPurge(payment: Pick<Payment, "deletedAt" | "updatedAt">) {
+  const deletedAt = new Date(payment.deletedAt ?? payment.updatedAt).getTime();
+  if (Number.isNaN(deletedAt)) return trashRetentionDays;
+
+  const elapsedDays = Math.floor((Date.now() - deletedAt) / 86_400_000);
+  return Math.max(trashRetentionDays - elapsedDays, 0);
 }
 
 function buildTrend(payments: EnrichedPayment[]) {
