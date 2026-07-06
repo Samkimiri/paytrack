@@ -24,8 +24,15 @@ create table if not exists public.items (
   title text not null,
   total_amount numeric(14, 2) not null check (total_amount >= 0),
   due_date date,
+  installment_count integer not null default 1 check (installment_count >= 1),
+  installment_amount numeric(14, 2) not null default 0 check (installment_amount >= 0),
+  installment_frequency text not null default 'once' check (installment_frequency in ('once', 'weekly', 'monthly')),
   created_at timestamptz not null default now()
 );
+
+alter table public.items add column if not exists installment_count integer not null default 1 check (installment_count >= 1);
+alter table public.items add column if not exists installment_amount numeric(14, 2) not null default 0 check (installment_amount >= 0);
+alter table public.items add column if not exists installment_frequency text not null default 'once' check (installment_frequency in ('once', 'weekly', 'monthly'));
 
 create table if not exists public.payments (
   id uuid primary key default gen_random_uuid(),
@@ -67,7 +74,14 @@ create table if not exists public.app_state_snapshots (
     and jsonb_typeof(payload->'items') = 'array'
     and jsonb_typeof(payload->'payments') = 'array'
     and jsonb_typeof(payload->'auditLog') = 'array'
+    and coalesce(jsonb_typeof(payload->'roles'), 'object') = 'object'
   )
+);
+
+create table if not exists public.user_roles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  role text not null check (role in ('admin', 'staff')),
+  created_at timestamptz not null default now()
 );
 
 create or replace function public.prevent_payment_hard_delete()
@@ -184,11 +198,32 @@ select
   i.id as item_id,
   i.title,
   i.total_amount,
+  i.installment_count,
+  i.installment_amount,
+  i.installment_frequency,
   coalesce(sum(p.amount) filter (where p.is_deleted = false), 0) as total_paid,
   i.total_amount - coalesce(sum(p.amount) filter (where p.is_deleted = false), 0) as balance
 from public.items i
 left join public.payments p on p.item_id = i.id
-group by i.business_id, i.payer_id, i.id, i.title, i.total_amount;
+group by i.business_id, i.payer_id, i.id, i.title, i.total_amount, i.installment_count, i.installment_amount, i.installment_frequency;
+
+create or replace view public.overdue_balances as
+select
+  pb.business_id,
+  pb.payer_id,
+  py.full_name as payer_name,
+  py.phone,
+  py.email,
+  pb.item_id,
+  pb.title as item_title,
+  i.due_date,
+  pb.balance,
+  current_date - i.due_date as days_overdue
+from public.payer_balances pb
+join public.items i on i.id = pb.item_id
+join public.payers py on py.id = pb.payer_id
+where pb.balance > 0
+  and i.due_date < current_date;
 
 create or replace view public.monthly_income as
 select
@@ -226,6 +261,7 @@ alter table public.items enable row level security;
 alter table public.payments enable row level security;
 alter table public.payment_audit_log enable row level security;
 alter table public.app_state_snapshots enable row level security;
+alter table public.user_roles enable row level security;
 
 create or replace function public.is_admin()
 returns boolean
@@ -233,6 +269,32 @@ language sql
 stable
 as $$
   select auth.role() = 'authenticated'
+    and (
+      exists (
+        select 1
+        from public.user_roles r
+        where r.user_id = auth.uid()
+          and r.role = 'admin'
+      )
+      or not exists (select 1 from public.user_roles)
+    )
+$$;
+
+create or replace function public.is_staff_or_admin()
+returns boolean
+language sql
+stable
+as $$
+  select auth.role() = 'authenticated'
+    and (
+      exists (
+        select 1
+        from public.user_roles r
+        where r.user_id = auth.uid()
+          and r.role in ('admin', 'staff')
+      )
+      or not exists (select 1 from public.user_roles)
+    )
 $$;
 
 drop policy if exists "admin read businesses" on public.businesses;
@@ -249,19 +311,23 @@ drop policy if exists "admin read app state" on public.app_state_snapshots;
 drop policy if exists "admin write app state" on public.app_state_snapshots;
 drop policy if exists "online app state read" on public.app_state_snapshots;
 drop policy if exists "online app state write" on public.app_state_snapshots;
+drop policy if exists "admin read user roles" on public.user_roles;
+drop policy if exists "admin write user roles" on public.user_roles;
 
-create policy "admin read businesses" on public.businesses for select using (public.is_admin());
+create policy "admin read businesses" on public.businesses for select using (public.is_staff_or_admin());
 create policy "admin write businesses" on public.businesses for all using (public.is_admin()) with check (public.is_admin());
-create policy "admin read payers" on public.payers for select using (public.is_admin());
+create policy "admin read payers" on public.payers for select using (public.is_staff_or_admin());
 create policy "admin write payers" on public.payers for all using (public.is_admin()) with check (public.is_admin());
-create policy "admin read items" on public.items for select using (public.is_admin());
+create policy "admin read items" on public.items for select using (public.is_staff_or_admin());
 create policy "admin write items" on public.items for all using (public.is_admin()) with check (public.is_admin());
-create policy "admin read payments" on public.payments for select using (public.is_admin());
+create policy "admin read payments" on public.payments for select using (public.is_staff_or_admin());
 create policy "admin write payments" on public.payments for all using (public.is_admin()) with check (public.is_admin());
-create policy "admin read audit" on public.payment_audit_log for select using (public.is_admin());
+create policy "admin read audit" on public.payment_audit_log for select using (public.is_staff_or_admin());
 create policy "audit insert via trigger" on public.payment_audit_log for insert with check (public.is_admin());
 create policy "online app state read" on public.app_state_snapshots for select using (true);
 create policy "online app state write" on public.app_state_snapshots for all using (true) with check (true);
+create policy "admin read user roles" on public.user_roles for select using (public.is_admin());
+create policy "admin write user roles" on public.user_roles for all using (public.is_admin()) with check (public.is_admin());
 
 insert into public.businesses (slug, name)
 values

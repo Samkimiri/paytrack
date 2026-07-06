@@ -9,21 +9,25 @@ export const defaultAppData: AppData = {
   items: [],
   payments: [],
   auditLog: [],
+  roles: { admin: "admin" },
 };
 
 type PersistResult = {
   backend: StorageBackend;
   error?: string;
+  savedAt: string;
 };
 
 type SupabaseSnapshot = {
   payload: AppData;
+  updated_at?: string;
 };
 
 type LoadResult = {
   data: AppData;
   backend: StorageBackend;
   error?: string;
+  savedAt?: string;
 };
 
 const legacyDemoIds = new Set([
@@ -75,9 +79,17 @@ function headers() {
 function normalizeData(data: Partial<AppData> | null | undefined): AppData {
   return {
     payers: Array.isArray(data?.payers) ? data.payers : defaultAppData.payers,
-    items: Array.isArray(data?.items) ? data.items : defaultAppData.items,
+    items: Array.isArray(data?.items)
+      ? data.items.map((item) => ({
+          ...item,
+          installmentCount: Number(item.installmentCount ?? 1),
+          installmentAmount: Number(item.installmentAmount ?? item.totalAmount ?? 0),
+          installmentFrequency: item.installmentFrequency ?? "once",
+        }))
+      : defaultAppData.items,
     payments: Array.isArray(data?.payments) ? data.payments : defaultAppData.payments,
     auditLog: Array.isArray(data?.auditLog) ? data.auditLog : defaultAppData.auditLog,
+    roles: data?.roles && typeof data.roles === "object" ? data.roles : defaultAppData.roles,
   };
 }
 
@@ -109,6 +121,7 @@ function removeLegacyDemoRecords(data: AppData): SanitizedData {
       items,
       payments,
       auditLog,
+      roles: data.roles,
     },
     changed,
   };
@@ -232,19 +245,21 @@ export async function loadAppData(): Promise<LoadResult> {
 
 export async function saveAppData(data: AppData): Promise<PersistResult> {
   const sanitized = sanitizeData(data).data;
+  const savedAt = new Date().toISOString();
   saveBrowserData(sanitized);
 
   if (!canUseSupabase()) {
-    return { backend: "browser", error: "Supabase is not configured" };
+    return { backend: "browser", error: "Supabase is not configured", savedAt };
   }
 
   try {
     await saveSupabaseData(sanitized);
-    return { backend: "supabase" };
+    return { backend: "supabase", savedAt };
   } catch (error) {
     return {
       backend: "browser",
       error: error instanceof Error ? error.message : "Supabase save failed",
+      savedAt,
     };
   }
 }

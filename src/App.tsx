@@ -58,6 +58,7 @@ const dateFmt = new Intl.DateTimeFormat("en-KE", {
 });
 
 type TrendPoint = { month: string; income: number };
+type DateRangeFilter = "all" | "today" | "week" | "month" | "custom";
 
 const IncomeTrendChart = lazy(async () => {
   const { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } = await import("recharts");
@@ -139,10 +140,36 @@ function openPaymentNotifications(details: PaymentNotificationDetails) {
   }
 }
 
+function buildBalanceReminderMessage(item: FollowUpItem) {
+  const business = businesses[item.businessId];
+  const timing = item.daysUntilDue < 0
+    ? `overdue by ${Math.abs(item.daysUntilDue)} day${Math.abs(item.daysUntilDue) === 1 ? "" : "s"}`
+    : `due in ${item.daysUntilDue} day${item.daysUntilDue === 1 ? "" : "s"}`;
+
+  return [
+    `Hello ${item.payerName},`,
+    "",
+    `This is a friendly reminder from ${business.name} about your balance of ${money.format(item.balance)} for ${item.itemTitle}.`,
+    `The payment is ${timing}.`,
+    "",
+    "Please let us know once you have completed the payment, or if you need us to confirm the payment details.",
+    "",
+    "Warm regards,",
+    business.name,
+  ].join("\n");
+}
+
+function openWhatsAppReminder(item: FollowUpItem) {
+  const whatsappPhone = normalizeWhatsAppPhone(item.phone);
+  if (!whatsappPhone) return;
+  window.open(`https://wa.me/${whatsappPhone}?text=${encodeURIComponent(buildBalanceReminderMessage(item))}`, "_blank", "noopener,noreferrer");
+}
+
 const nav = [
   { id: "home", label: "Home", icon: Home },
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "payments", label: "Payments", icon: ReceiptText },
+  { id: "overdue", label: "Overdue", icon: AlertTriangle },
   { id: "payers", label: "Clients/Students", icon: UsersRound },
   { id: "add", label: "Add Payment", icon: Plus },
   { id: "reports", label: "Reports", icon: FileText },
@@ -203,6 +230,8 @@ type FormState = {
   newPayerEmail: string;
   itemTitle: string;
   totalDue: string;
+  installmentCount: string;
+  installmentFrequency: "once" | "weekly" | "monthly";
   amount: string;
   method: PaymentMethod;
   mpesaCode: string;
@@ -230,13 +259,18 @@ function App() {
   const [items, setItems] = useState<Item[]>(defaultAppData.items);
   const [payments, setPayments] = useState<Payment[]>(defaultAppData.payments);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>(defaultAppData.auditLog);
+  const [roles, setRoles] = useState(defaultAppData.roles);
   const [hydrated, setHydrated] = useState(false);
   const [storageBackend, setStorageBackend] = useState<StorageBackend>("browser");
   const [saveState, setSaveState] = useState<"loading" | "saved" | "saving" | "error">("loading");
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [methodFilter, setMethodFilter] = useState<"all" | PaymentMethod>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | PaymentStatus>("all");
+  const [dateRange, setDateRange] = useState<DateRangeFilter>("month");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [selectedPayerId, setSelectedPayerId] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
@@ -255,9 +289,13 @@ function App() {
         return {
           ...payment,
           payerName: payer?.fullName ?? "Unknown payer",
+          payerPhone: payer?.phone ?? "",
+          payerEmail: payer?.email ?? "",
           itemTitle: item?.title ?? "Unassigned item",
           businessName: businesses[payment.businessId].shortName,
           balance: Math.max((item?.totalAmount ?? 0) - activePaid, 0),
+          dueDate: item?.dueDate ?? payment.date,
+          totalAmount: item?.totalAmount ?? payment.amount,
         };
       }),
     [items, payers, payments],
@@ -269,13 +307,14 @@ function App() {
         .filter((payment) => visibleBusinessIds.includes(payment.businessId))
         .filter((payment) => !payment.isDeleted)
         .filter((payment) => {
-          const haystack = `${payment.payerName} ${payment.itemTitle} ${payment.mpesaCode ?? ""}`.toLowerCase();
+          const haystack = `${payment.payerName} ${payment.payerPhone} ${payment.payerEmail} ${payment.itemTitle} ${payment.mpesaCode ?? ""}`.toLowerCase();
           return haystack.includes(query.toLowerCase());
         })
+        .filter((payment) => isPaymentInDateRange(payment.date, dateRange, customFrom, customTo))
         .filter((payment) => (methodFilter === "all" ? true : payment.method === methodFilter))
         .filter((payment) => (statusFilter === "all" ? true : payment.status === statusFilter))
         .sort((a, b) => b.date.localeCompare(a.date)),
-    [enrichedPayments, methodFilter, query, statusFilter, visibleBusinessIds],
+    [customFrom, customTo, dateRange, enrichedPayments, methodFilter, query, statusFilter, visibleBusinessIds],
   );
   const trashPayments = useMemo(
     () =>
@@ -329,6 +368,7 @@ function App() {
       setItems(data.items);
       setPayments(data.payments);
       setAuditLog(data.auditLog);
+      setRoles(data.roles);
       setStorageBackend(backend);
       setStorageError(error ?? null);
       setSaveState(error ? "error" : "saved");
@@ -345,15 +385,16 @@ function App() {
 
     const handle = window.setTimeout(() => {
       setSaveState("saving");
-      saveAppData({ payers, items, payments, auditLog }).then(({ backend, error }) => {
+      saveAppData({ payers, items, payments, auditLog, roles }).then(({ backend, error, savedAt }) => {
         setStorageBackend(backend);
         setStorageError(error ?? null);
+        setLastSavedAt(savedAt);
         setSaveState(error ? "error" : "saved");
       });
     }, 250);
 
     return () => window.clearTimeout(handle);
-  }, [auditLog, hydrated, items, payers, payments]);
+  }, [auditLog, hydrated, items, payers, payments, roles]);
 
   function recordAudit(paymentId: string, action: AuditEntry["action"], changedFields: string[], previousValues = {}) {
     setAuditLog((current) => [
@@ -378,6 +419,7 @@ function App() {
     let payerId = state.payerId;
     const amount = Number(state.amount);
     const totalDue = Number(state.totalDue);
+    const installmentCount = Math.max(Number(state.installmentCount || 1), 1);
     let notificationPayer = payers.find((payer) => payer.id === payerId);
 
     if (state.newPayerName.trim()) {
@@ -410,6 +452,9 @@ function App() {
       title: state.itemTitle,
       totalAmount: totalDue,
       dueDate: state.dueDate || today,
+      installmentCount,
+      installmentAmount: Math.ceil(totalDue / installmentCount),
+      installmentFrequency: state.installmentFrequency as Item["installmentFrequency"],
       createdAt: new Date().toISOString(),
     };
     const paidForItem = payments
@@ -453,6 +498,7 @@ function App() {
     const state = Object.fromEntries(formData.entries()) as Record<string, string>;
     const amount = Number(state.amount);
     const totalDue = Number(state.totalDue);
+    const installmentCount = Math.max(Number(state.installmentCount || 1), 1);
     const method = state.method as PaymentMethod;
     const mpesaCode = method === "M-Pesa" ? state.mpesaCode.trim() : "";
     const paymentDate = state.date || today;
@@ -476,6 +522,8 @@ function App() {
     trackChange("item_title", currentItem.title, state.itemTitle);
     trackChange("total_due", currentItem.totalAmount, totalDue);
     trackChange("due_date", currentItem.dueDate, dueDate);
+    trackChange("installment_count", currentItem.installmentCount, installmentCount);
+    trackChange("installment_frequency", currentItem.installmentFrequency, state.installmentFrequency);
 
     if (!changedFields.length) {
       setEditingPaymentId(null);
@@ -491,6 +539,9 @@ function App() {
               title: state.itemTitle,
               totalAmount: totalDue,
               dueDate,
+              installmentCount,
+              installmentAmount: Math.ceil(totalDue / installmentCount),
+              installmentFrequency: state.installmentFrequency as Item["installmentFrequency"],
             }
           : item,
       ),
@@ -642,6 +693,60 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
+  async function exportMonthlyPdf() {
+    const { default: jsPDF } = await import("jspdf");
+    const doc = new jsPDF();
+    const active = scopedPayments.filter((payment) => !payment.isDeleted);
+    const total = active.reduce((sum, payment) => sum + payment.amount, 0);
+    const mpesa = active.filter((payment) => payment.method === "M-Pesa").reduce((sum, payment) => sum + payment.amount, 0);
+    const cash = active.filter((payment) => payment.method === "Cash").reduce((sum, payment) => sum + payment.amount, 0);
+    const bank = active.filter((payment) => payment.method === "Bank Transfer").reduce((sum, payment) => sum + payment.amount, 0);
+
+    doc.setFillColor(activeBrand.primary);
+    doc.rect(0, 0, 210, 34, "F");
+    doc.setTextColor("#ffffff");
+    doc.setFontSize(17);
+    doc.text("PayTrack Monthly Income Report", 18, 18);
+    doc.setFontSize(10);
+    doc.text(scope === "combined" ? "Combined business scope" : businesses[scope].name, 18, 26);
+    doc.setTextColor(activeBrand.primary);
+    doc.setFontSize(20);
+    doc.text(money.format(total), 18, 52);
+    doc.setTextColor("#667085");
+    doc.setFontSize(11);
+    doc.text(`Generated ${dateFmt.format(new Date(today))}`, 18, 62);
+
+    const rows = [
+      ["Transactions", String(active.length)],
+      ["M-Pesa", money.format(mpesa)],
+      ["Cash", money.format(cash)],
+      ["Bank Transfer", money.format(bank)],
+      ["Outstanding balances", money.format(outstanding)],
+    ];
+    rows.forEach(([label, value], index) => {
+      const y = 82 + index * 10;
+      doc.setTextColor("#667085");
+      doc.text(label, 18, y);
+      doc.setTextColor("#172033");
+      doc.text(value, 86, y);
+    });
+
+    doc.setTextColor(activeBrand.primary);
+    doc.setFontSize(14);
+    doc.text("Business split", 18, 148);
+    Object.values(businesses).forEach((business, index) => {
+      const businessTotal = active
+        .filter((payment) => payment.businessId === business.id)
+        .reduce((sum, payment) => sum + payment.amount, 0);
+      const y = 162 + index * 10;
+      doc.setTextColor("#667085");
+      doc.text(business.name, 18, y);
+      doc.setTextColor("#172033");
+      doc.text(money.format(businessTotal), 120, y);
+    });
+    doc.save(`paytrack-income-report-${scope}-${today}.pdf`);
+  }
+
   return (
     <div className="money-pattern min-h-screen transition-colors" style={{ backgroundColor: activeBrand.light }}>
       <div className="flex min-h-screen">
@@ -736,6 +841,9 @@ function App() {
                           ? "Saved online"
                           : "Saved locally"}
                 </p>
+                {lastSavedAt && (
+                  <p className="mt-1 text-xs text-white/60">Last saved {dateFmt.format(new Date(lastSavedAt))}</p>
+                )}
                 {storageError && <p className="mt-1 text-xs text-white/60">{storageError}</p>}
               </div>
             </div>
@@ -795,6 +903,12 @@ function App() {
                 recent={scopedPayments.slice(0, 6)}
                 confidenceLedger={confidenceLedger}
                 followUpLedger={followUpLedger}
+                dateRange={dateRange}
+                setDateRange={setDateRange}
+                customFrom={customFrom}
+                setCustomFrom={setCustomFrom}
+                customTo={customTo}
+                setCustomTo={setCustomTo}
                 onExportFollowUps={exportFollowUps}
                 onPrint={printReceipt}
               />
@@ -808,12 +922,25 @@ function App() {
                 setMethodFilter={setMethodFilter}
                 statusFilter={statusFilter}
                 setStatusFilter={setStatusFilter}
+                dateRange={dateRange}
+                setDateRange={setDateRange}
+                customFrom={customFrom}
+                setCustomFrom={setCustomFrom}
+                customTo={customTo}
+                setCustomTo={setCustomTo}
                 payments={scopedPayments}
                 confidenceLedger={confidenceLedger}
                 onEdit={startEditingPayment}
                 onDelete={softDelete}
                 onPrint={printReceipt}
                 onExport={exportCsv}
+              />
+            )}
+            {view === "overdue" && (
+              <OverdueView
+                activeBrand={activeBrand}
+                ledger={followUpLedger}
+                onExportFollowUps={exportFollowUps}
               />
             )}
             {view === "payers" && (
@@ -825,6 +952,7 @@ function App() {
                 selectedPayer={selectedPayer}
                 setSelectedPayerId={setSelectedPayerId}
                 auditLog={auditLog}
+                onPrint={printReceipt}
               />
             )}
             {view === "add" && (
@@ -846,9 +974,19 @@ function App() {
                 followUpLedger={followUpLedger}
                 onExport={exportCsv}
                 onExportFollowUps={exportFollowUps}
+                onExportMonthlyPdf={exportMonthlyPdf}
               />
             )}
-            {view === "settings" && <SettingsView activeBrand={activeBrand} />}
+            {view === "settings" && (
+              <SettingsView
+                activeBrand={activeBrand}
+                storageBackend={storageBackend}
+                saveState={saveState}
+                storageError={storageError}
+                lastSavedAt={lastSavedAt}
+                roles={roles}
+              />
+            )}
           </div>
         </main>
       </div>
@@ -961,6 +1099,56 @@ function HomeActionCard({
   );
 }
 
+function DateRangeControls({
+  dateRange,
+  setDateRange,
+  customFrom,
+  setCustomFrom,
+  customTo,
+  setCustomTo,
+}: {
+  dateRange: DateRangeFilter;
+  setDateRange: (value: DateRangeFilter) => void;
+  customFrom: string;
+  setCustomFrom: (value: string) => void;
+  customTo: string;
+  setCustomTo: (value: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded border border-slate-200 bg-white p-3 shadow-soft">
+      <div className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+        <CalendarDays className="h-4 w-4 text-slate-500" />
+        Date range
+      </div>
+      <select
+        value={dateRange}
+        onChange={(event) => setDateRange(event.target.value as DateRangeFilter)}
+        className="rounded border border-slate-200 bg-white px-3 py-2 text-sm"
+      >
+        <option value="today">Today</option>
+        <option value="week">This week</option>
+        <option value="month">This month</option>
+        <option value="all">All dates</option>
+        <option value="custom">Custom</option>
+      </select>
+      <input
+        type="date"
+        value={customFrom}
+        onChange={(event) => setCustomFrom(event.target.value)}
+        disabled={dateRange !== "custom"}
+        className="rounded border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+      />
+      <input
+        type="date"
+        value={customTo}
+        onChange={(event) => setCustomTo(event.target.value)}
+        disabled={dateRange !== "custom"}
+        className="rounded border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+      />
+    </div>
+  );
+}
+
 function Dashboard({
   activeBrand,
   totalCollected,
@@ -971,6 +1159,12 @@ function Dashboard({
   recent,
   confidenceLedger,
   followUpLedger,
+  dateRange,
+  setDateRange,
+  customFrom,
+  setCustomFrom,
+  customTo,
+  setCustomTo,
   onExportFollowUps,
   onPrint,
 }: {
@@ -983,11 +1177,25 @@ function Dashboard({
   recent: EnrichedPayment[];
   confidenceLedger: ConfidenceLedger;
   followUpLedger: FollowUpLedger;
+  dateRange: DateRangeFilter;
+  setDateRange: (value: DateRangeFilter) => void;
+  customFrom: string;
+  setCustomFrom: (value: string) => void;
+  customTo: string;
+  setCustomTo: (value: string) => void;
   onExportFollowUps: () => void;
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
 }) {
   return (
     <div className="space-y-6">
+      <DateRangeControls
+        dateRange={dateRange}
+        setDateRange={setDateRange}
+        customFrom={customFrom}
+        setCustomFrom={setCustomFrom}
+        customTo={customTo}
+        setCustomTo={setCustomTo}
+      />
       <MoneyDashboardGraphic
         activeBrand={activeBrand}
         totalCollected={totalCollected}
@@ -1109,6 +1317,12 @@ function PaymentsView(props: {
   setMethodFilter: (value: "all" | PaymentMethod) => void;
   statusFilter: "all" | PaymentStatus;
   setStatusFilter: (value: "all" | PaymentStatus) => void;
+  dateRange: DateRangeFilter;
+  setDateRange: (value: DateRangeFilter) => void;
+  customFrom: string;
+  setCustomFrom: (value: string) => void;
+  customTo: string;
+  setCustomTo: (value: string) => void;
   payments: EnrichedPayment[];
   confidenceLedger: ConfidenceLedger;
   onEdit: (payment: EnrichedPayment) => void;
@@ -1120,13 +1334,13 @@ function PaymentsView(props: {
 
   return (
     <Panel title="Payment Records" icon={ReceiptText} action={<IconButton label="Export CSV" icon={Download} onClick={props.onExport} glow />}>
-      <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_180px_180px]">
+      <div className="mb-4 grid gap-3 xl:grid-cols-[1fr_150px_150px_160px_150px_150px]">
         <label className="relative">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             value={props.query}
             onChange={(event) => props.setQuery(event.target.value)}
-            placeholder="Search payer, item, or M-Pesa code"
+            placeholder="Search payer, phone, item, or M-Pesa code"
             className="w-full rounded border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
           />
         </label>
@@ -1150,6 +1364,31 @@ function PaymentsView(props: {
           <option>Partial</option>
           <option>Pending</option>
         </select>
+        <select
+          value={props.dateRange}
+          onChange={(event) => props.setDateRange(event.target.value as DateRangeFilter)}
+          className="rounded border border-slate-200 bg-white px-3 py-2 text-sm"
+        >
+          <option value="today">Today</option>
+          <option value="week">This week</option>
+          <option value="month">This month</option>
+          <option value="all">All dates</option>
+          <option value="custom">Custom</option>
+        </select>
+        <input
+          type="date"
+          value={props.customFrom}
+          onChange={(event) => props.setCustomFrom(event.target.value)}
+          disabled={props.dateRange !== "custom"}
+          className="rounded border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+        />
+        <input
+          type="date"
+          value={props.customTo}
+          onChange={(event) => props.setCustomTo(event.target.value)}
+          disabled={props.dateRange !== "custom"}
+          className="rounded border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+        />
       </div>
       <div className="overflow-x-auto">
         <table className="min-w-[980px] w-full border-collapse text-left text-sm">
@@ -1269,6 +1508,7 @@ function PayersView({
   selectedPayer,
   setSelectedPayerId,
   auditLog,
+  onPrint,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
   payers: Payer[];
@@ -1277,6 +1517,7 @@ function PayersView({
   selectedPayer: Payer | null | undefined;
   setSelectedPayerId: (id: string) => void;
   auditLog: AuditEntry[];
+  onPrint: (payment: EnrichedPayment) => void | Promise<void>;
 }) {
   return (
     <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
@@ -1314,7 +1555,7 @@ function PayersView({
       </Panel>
       <Panel title={selectedPayer ? selectedPayer.fullName : "Profile Details"} icon={BriefcaseBusiness}>
         {selectedPayer ? (
-          <ProfileDetails payer={selectedPayer} items={items} payments={payments} auditLog={auditLog} activeBrand={activeBrand} />
+          <ProfileDetails payer={selectedPayer} items={items} payments={payments} auditLog={auditLog} activeBrand={activeBrand} onPrint={onPrint} />
         ) : (
           <p className="text-sm text-slate-500">Select a payer to inspect balances, history, and audit entries.</p>
         )}
@@ -1349,6 +1590,8 @@ function AddPaymentView({
     newPayerEmail: "",
     itemTitle: editContext?.item.title ?? "",
     totalDue: editContext ? String(editContext.item.totalAmount) : "",
+    installmentCount: editContext ? String(editContext.item.installmentCount ?? 1) : "1",
+    installmentFrequency: editContext?.item.installmentFrequency ?? "once",
     amount: editContext ? String(editContext.payment.amount) : "",
     method: editContext?.payment.method ?? "M-Pesa",
     mpesaCode: editContext?.payment.mpesaCode ?? "",
@@ -1413,6 +1656,16 @@ function AddPaymentView({
         </Field>
         <Field label="Total amount due">
           <input name="totalDue" value={form.totalDue} onChange={updateForm} type="number" min="0" className="input tabular" required />
+        </Field>
+        <Field label="Installments">
+          <input name="installmentCount" value={form.installmentCount} onChange={updateForm} type="number" min="1" className="input tabular" />
+        </Field>
+        <Field label="Installment frequency">
+          <select name="installmentFrequency" value={form.installmentFrequency} onChange={updateForm} className="input">
+            <option value="once">Once</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+          </select>
         </Field>
         <Field label={isEditing ? "Payment amount" : "Amount paid now"}>
           <input name="amount" value={form.amount} onChange={updateForm} type="number" min="0" className="input tabular" required />
@@ -1490,6 +1743,7 @@ function ReportsView({
   followUpLedger,
   onExport,
   onExportFollowUps,
+  onExportMonthlyPdf,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
   scopedPayments: EnrichedPayment[];
@@ -1497,6 +1751,7 @@ function ReportsView({
   followUpLedger: FollowUpLedger;
   onExport: () => void;
   onExportFollowUps: () => void;
+  onExportMonthlyPdf: () => void | Promise<void>;
 }) {
   const byBusiness = Object.values(businesses).map((business) => ({
     business,
@@ -1506,7 +1761,16 @@ function ReportsView({
   }));
   return (
     <div className="space-y-6">
-      <Panel title="Statements & Export" icon={FileText} action={<IconButton label="Download CSV" icon={Download} onClick={onExport} />}>
+      <Panel
+        title="Statements & Export"
+        icon={FileText}
+        action={
+          <div className="flex gap-2">
+            <IconButton label="Download CSV" icon={Download} onClick={onExport} />
+            <IconButton label="Download monthly PDF" icon={FileText} onClick={onExportMonthlyPdf} glow />
+          </div>
+        }
+      >
         <div className="grid gap-4 md:grid-cols-2">
           {byBusiness.map(({ business, total }) => (
             <div key={business.id} className="rounded border border-slate-200 bg-white p-5">
@@ -1544,17 +1808,49 @@ function ReportsView({
   );
 }
 
-function SettingsView({ activeBrand }: { activeBrand: (typeof businesses)[BusinessId] }) {
+function SettingsView({
+  activeBrand,
+  storageBackend,
+  saveState,
+  storageError,
+  lastSavedAt,
+  roles,
+}: {
+  activeBrand: (typeof businesses)[BusinessId];
+  storageBackend: StorageBackend;
+  saveState: "loading" | "saved" | "saving" | "error";
+  storageError: string | null;
+  lastSavedAt: string | null;
+  roles: Record<string, "admin" | "staff">;
+}) {
   return (
     <Panel title="Settings" icon={Settings}>
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded border border-slate-200 bg-white p-5">
-          <p className="font-semibold text-slate-950">Supabase connection</p>
+          <p className="font-semibold text-slate-950">Cloud backup status</p>
           <p className="mt-2 text-sm text-slate-500">
-            Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env.local, then run supabase/schema.sql so records sync online.
+            Current backend: <span className="font-semibold capitalize text-slate-800">{storageBackend}</span>. Status: <span className="font-semibold capitalize text-slate-800">{saveState}</span>.
           </p>
+          <p className="mt-2 text-sm text-slate-500">
+            {lastSavedAt ? `Last saved on ${dateFmt.format(new Date(lastSavedAt))}.` : "Waiting for the first completed save in this session."}
+          </p>
+          {storageError && <p className="mt-2 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{storageError}</p>}
         </div>
         <div className="rounded border border-slate-200 bg-white p-5">
+          <p className="font-semibold text-slate-950">Role-based access</p>
+          <p className="mt-2 text-sm text-slate-500">
+            App data stores staff/admin roles, while the Supabase schema enforces authenticated admin access with row-level security policies.
+          </p>
+          <div className="mt-4 space-y-2">
+            {Object.entries(roles).map(([user, role]) => (
+              <div key={user} className="flex items-center justify-between rounded border border-slate-200 px-3 py-2 text-sm">
+                <span className="font-medium text-slate-800">{user}</span>
+                <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold uppercase text-slate-600">{role}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded border border-slate-200 bg-white p-5 lg:col-span-2">
           <p className="font-semibold text-slate-950">Audit policy</p>
           <p className="mt-2 text-sm text-slate-500">
             Payment edits and soft deletes are logged. Production enforcement is handled by Postgres triggers in the included schema.
@@ -1572,12 +1868,14 @@ function ProfileDetails({
   payments,
   auditLog,
   activeBrand,
+  onPrint,
 }: {
   payer: Payer;
   items: Item[];
   payments: Payment[];
   auditLog: AuditEntry[];
   activeBrand: (typeof businesses)[BusinessId];
+  onPrint: (payment: EnrichedPayment) => void | Promise<void>;
 }) {
   const payerItems = items.filter((item) => item.payerId === payer.id);
   const payerPayments = payments.filter((payment) => payment.payerId === payer.id && !payment.isDeleted);
@@ -1595,11 +1893,25 @@ function ProfileDetails({
       <div className="overflow-x-auto">
         <table className="min-w-[680px] w-full text-left text-sm">
           <thead className="border-b border-slate-200 text-xs uppercase text-slate-500">
-            <tr><th className="py-3">Date</th><th>Item</th><th>Amount</th><th>Status</th><th>Method</th></tr>
+            <tr><th className="py-3">Date</th><th>Item</th><th>Amount</th><th>Status</th><th>Method</th><th>Receipt</th></tr>
           </thead>
           <tbody>
             {payerPayments.map((payment) => {
               const item = items.find((entry) => entry.id === payment.itemId);
+              const paidForItem = payments
+                .filter((entry) => entry.itemId === payment.itemId && !entry.isDeleted)
+                .reduce((sum, entry) => sum + entry.amount, 0);
+              const enrichedPayment: EnrichedPayment = {
+                ...payment,
+                payerName: payer.fullName,
+                payerPhone: payer.phone,
+                payerEmail: payer.email,
+                itemTitle: item?.title ?? "Unassigned item",
+                businessName: businesses[payment.businessId].shortName,
+                balance: Math.max((item?.totalAmount ?? 0) - paidForItem, 0),
+                dueDate: item?.dueDate ?? payment.date,
+                totalAmount: item?.totalAmount ?? payment.amount,
+              };
               return (
                 <tr key={payment.id} className="border-b border-slate-100">
                   <td className="py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
@@ -1607,6 +1919,9 @@ function ProfileDetails({
                   <td className="font-semibold tabular">{money.format(payment.amount)}</td>
                   <td><StatusBadge status={payment.status} brand={activeBrand} edited={payment.edited} /></td>
                   <td>{payment.method}</td>
+                  <td>
+                    <IconButton label="Download receipt" icon={Download} onClick={() => onPrint(enrichedPayment)} glow />
+                  </td>
                 </tr>
               );
             })}
@@ -1681,8 +1996,51 @@ function FollowUpRow({ item, activeBrand }: { item: FollowUpItem; activeBrand: (
         <div className="text-right">
           <p className="font-semibold tabular" style={{ color }}>{money.format(item.balance)}</p>
           <p className="mt-1 text-xs font-semibold uppercase" style={{ color }}>{timing}</p>
+          <button
+            className="mt-2 inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => openWhatsAppReminder(item)}
+            disabled={!normalizeWhatsAppPhone(item.phone)}
+          >
+            <MessageCircle className="h-3.5 w-3.5" />
+            WhatsApp
+          </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function OverdueView({
+  activeBrand,
+  ledger,
+  onExportFollowUps,
+}: {
+  activeBrand: (typeof businesses)[BusinessId];
+  ledger: FollowUpLedger;
+  onExportFollowUps: () => void;
+}) {
+  const overdueItems = ledger.items
+    .filter((item) => item.status === "overdue")
+    .sort((a, b) => b.balance - a.balance || a.daysUntilDue - b.daysUntilDue);
+
+  return (
+    <div className="space-y-6">
+      <Panel title="Overdue Balances" icon={AlertTriangle} action={<IconButton label="Download follow-ups" icon={Download} onClick={onExportFollowUps} glow />}>
+        <div className="grid gap-4 md:grid-cols-3">
+          <MetricMini label="Overdue Total" value={money.format(ledger.overdueTotal)} color={activeBrand.alert} />
+          <MetricMini label="Overdue Clients" value={String(overdueItems.length)} color={activeBrand.alert} />
+          <MetricMini label="WhatsApp Ready" value={String(overdueItems.filter((item) => normalizeWhatsAppPhone(item.phone)).length)} color={activeBrand.accent} />
+        </div>
+        <div className="mt-5 space-y-2">
+          {overdueItems.length ? (
+            overdueItems.map((item) => <FollowUpRow key={item.id} item={item} activeBrand={activeBrand} />)
+          ) : (
+            <div className="rounded border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+              No overdue balances in the selected scope.
+            </div>
+          )}
+        </div>
+      </Panel>
     </div>
   );
 }
@@ -1872,6 +2230,37 @@ function daysUntilTrashPurge(payment: Pick<Payment, "deletedAt" | "updatedAt">) 
 
   const elapsedDays = Math.floor((Date.now() - deletedAt) / 86_400_000);
   return Math.max(trashRetentionDays - elapsedDays, 0);
+}
+
+function isPaymentInDateRange(dateValue: string, range: DateRangeFilter, customFrom: string, customTo: string) {
+  if (range === "all") return true;
+
+  const paymentDate = new Date(`${dateValue}T00:00:00`);
+  if (Number.isNaN(paymentDate.getTime())) return false;
+
+  const current = new Date(`${today}T00:00:00`);
+  let start = new Date(current);
+  let end = new Date(current);
+
+  if (range === "today") {
+    start = current;
+    end = current;
+  } else if (range === "week") {
+    const day = current.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    start = new Date(current);
+    start.setDate(current.getDate() + mondayOffset);
+    end = new Date(start);
+    end.setDate(start.getDate() + 6);
+  } else if (range === "month") {
+    start = new Date(current.getFullYear(), current.getMonth(), 1);
+    end = new Date(current.getFullYear(), current.getMonth() + 1, 0);
+  } else {
+    start = customFrom ? new Date(`${customFrom}T00:00:00`) : new Date(0);
+    end = customTo ? new Date(`${customTo}T00:00:00`) : new Date(8640000000000000);
+  }
+
+  return paymentDate >= start && paymentDate <= end;
 }
 
 function buildTrend(payments: EnrichedPayment[]) {

@@ -3,6 +3,7 @@ export type BusinessScope = BusinessId | "combined";
 export type PaymentMethod = "M-Pesa" | "Cash" | "Bank Transfer";
 export type PaymentStatus = "Paid" | "Partial" | "Pending";
 export type PayerType = "student" | "client";
+export type UserRole = "admin" | "staff";
 
 export type Business = {
   id: BusinessId;
@@ -33,6 +34,9 @@ export type Item = {
   title: string;
   totalAmount: number;
   dueDate: string;
+  installmentCount: number;
+  installmentAmount: number;
+  installmentFrequency: "once" | "weekly" | "monthly";
   createdAt: string;
 };
 
@@ -66,9 +70,13 @@ export type AuditEntry = {
 
 export type EnrichedPayment = Payment & {
   payerName: string;
+  payerPhone: string;
+  payerEmail: string;
   itemTitle: string;
   businessName: string;
   balance: number;
+  dueDate: string;
+  totalAmount: number;
 };
 
 export type AppData = {
@@ -76,6 +84,7 @@ export type AppData = {
   items: Item[];
   payments: Payment[];
   auditLog: AuditEntry[];
+  roles: Record<string, UserRole>;
 };
 
 export type StorageBackend = "supabase" | "browser";
