@@ -13,9 +13,11 @@ import {
   Mail,
   Menu,
   MessageCircle,
+  Pencil,
   Plus,
   Printer,
   ReceiptText,
+  Save,
   Search,
   Settings,
   ShieldCheck,
@@ -213,7 +215,14 @@ type FormState = {
   method: PaymentMethod;
   mpesaCode: string;
   date: string;
+  dueDate: string;
   notes: string;
+};
+
+type EditPaymentContext = {
+  payment: EnrichedPayment;
+  item: Item;
+  otherPaidForItem: number;
 };
 
 const today = new Date().toISOString().slice(0, 10);
@@ -238,6 +247,7 @@ function App() {
   const [statusFilter, setStatusFilter] = useState<"all" | PaymentStatus>("all");
   const [selectedPayerId, setSelectedPayerId] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
 
   const activeBrand = scope === "graphics" ? businesses.graphics : businesses.scds;
   const visibleBusinessIds = scope === "combined" ? (["scds", "graphics"] as BusinessId[]) : [scope];
@@ -298,6 +308,17 @@ function App() {
 
   const trend = buildTrend(activePayments);
   const selectedPayer = selectedPayerId ? payers.find((payer) => payer.id === selectedPayerId) : null;
+  const editingPayment = editingPaymentId ? enrichedPayments.find((payment) => payment.id === editingPaymentId) : undefined;
+  const editingItem = editingPayment ? items.find((item) => item.id === editingPayment.itemId) : undefined;
+  const editContext = editingPayment && editingItem
+    ? {
+        payment: editingPayment,
+        item: editingItem,
+        otherPaidForItem: payments
+          .filter((payment) => payment.itemId === editingPayment.itemId && payment.id !== editingPayment.id && !payment.isDeleted)
+          .reduce((sum, payment) => sum + payment.amount, 0),
+      }
+    : undefined;
   const confidenceLedger = useMemo(
     () => buildConfidenceLedger(enrichedPayments, items, auditLog, visibleBusinessIds),
     [auditLog, enrichedPayments, items, visibleBusinessIds],
@@ -429,6 +450,92 @@ function App() {
     setSavedFlash(true);
     window.setTimeout(() => setSavedFlash(false), 1800);
     event.currentTarget.reset();
+  }
+
+  function editPayment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editContext) return;
+
+    const { payment: currentPayment, item: currentItem, otherPaidForItem } = editContext;
+    const formData = new FormData(event.currentTarget);
+    const state = Object.fromEntries(formData.entries()) as Record<string, string>;
+    const amount = Number(state.amount);
+    const totalDue = Number(state.totalDue);
+    const method = state.method as PaymentMethod;
+    const mpesaCode = method === "M-Pesa" ? state.mpesaCode.trim() : "";
+    const paymentDate = state.date || today;
+    const dueDate = state.dueDate || today;
+    const status: PaymentStatus = totalDue - otherPaidForItem - amount <= 0 ? "Paid" : amount > 0 ? "Partial" : "Pending";
+    const previousValues: Record<string, unknown> = {};
+    const changedFields: string[] = [];
+    const trackChange = (field: string, previous: unknown, next: unknown) => {
+      if (previous !== next) {
+        changedFields.push(field);
+        previousValues[field] = previous;
+      }
+    };
+
+    trackChange("amount", currentPayment.amount, amount);
+    trackChange("method", currentPayment.method, method);
+    trackChange("mpesa_code", currentPayment.mpesaCode ?? "", mpesaCode);
+    trackChange("date", currentPayment.date, paymentDate);
+    trackChange("status", currentPayment.status, status);
+    trackChange("notes", currentPayment.notes, state.notes);
+    trackChange("item_title", currentItem.title, state.itemTitle);
+    trackChange("total_due", currentItem.totalAmount, totalDue);
+    trackChange("due_date", currentItem.dueDate, dueDate);
+
+    if (!changedFields.length) {
+      setEditingPaymentId(null);
+      setView("payments");
+      return;
+    }
+
+    setItems((current) =>
+      current.map((item) =>
+        item.id === currentItem.id
+          ? {
+              ...item,
+              title: state.itemTitle,
+              totalAmount: totalDue,
+              dueDate,
+            }
+          : item,
+      ),
+    );
+    setPayments((current) =>
+      current.map((payment) =>
+        payment.id === currentPayment.id
+          ? {
+              ...payment,
+              amount,
+              method,
+              mpesaCode: method === "M-Pesa" ? mpesaCode : undefined,
+              date: paymentDate,
+              status,
+              notes: state.notes,
+              updatedAt: new Date().toISOString(),
+              edited: true,
+            }
+          : payment,
+      ),
+    );
+
+    if (changedFields.length) {
+      recordAudit(currentPayment.id, "edited", changedFields, previousValues);
+    }
+    setEditingPaymentId(null);
+    setView("payments");
+  }
+
+  function startEditingPayment(payment: EnrichedPayment) {
+    setEditingPaymentId(payment.id);
+    setView("add");
+  }
+
+  function cancelEditingPayment() {
+    setEditingPaymentId(null);
+    setView("payments");
   }
 
   function softDelete(payment: Payment) {
@@ -593,6 +700,9 @@ function App() {
                     view === id ? "bg-white text-slate-950" : "text-white/70 hover:bg-white/10 hover:text-white"
                   }`}
                   onClick={() => {
+                    if (id === "add") {
+                      setEditingPaymentId(null);
+                    }
                     setView(id);
                     setMobileOpen(false);
                   }}
@@ -641,8 +751,11 @@ function App() {
                 </div>
               </div>
               <button
-                onClick={() => setView("add")}
-                className="inline-flex items-center gap-2 rounded px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2"
+                onClick={() => {
+                  setEditingPaymentId(null);
+                  setView("add");
+                }}
+                className="money-glow-button inline-flex items-center gap-2 rounded px-4 py-2 text-sm font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-offset-2"
                 style={{ backgroundColor: activeBrand.accent }}
               >
                 <Plus className="h-4 w-4" />
@@ -678,6 +791,7 @@ function App() {
                 setStatusFilter={setStatusFilter}
                 payments={scopedPayments}
                 confidenceLedger={confidenceLedger}
+                onEdit={startEditingPayment}
                 onDelete={softDelete}
                 onPrint={printReceipt}
                 onExport={exportCsv}
@@ -707,7 +821,9 @@ function App() {
                 scope={scope}
                 payers={payers}
                 savedFlash={savedFlash}
-                onSubmit={addPayment}
+                editContext={editContext}
+                onCancelEdit={cancelEditingPayment}
+                onSubmit={editContext ? editPayment : addPayment}
               />
             )}
             {view === "reports" && (
@@ -792,12 +908,13 @@ function PaymentsView(props: {
   setStatusFilter: (value: "all" | PaymentStatus) => void;
   payments: EnrichedPayment[];
   confidenceLedger: ConfidenceLedger;
+  onEdit: (payment: EnrichedPayment) => void;
   onDelete: (payment: Payment) => void;
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
   onExport: () => void;
 }) {
   return (
-    <Panel title="Payment Records" icon={ReceiptText} action={<IconButton label="Export CSV" icon={Download} onClick={props.onExport} />}>
+    <Panel title="Payment Records" icon={ReceiptText} action={<IconButton label="Export CSV" icon={Download} onClick={props.onExport} glow />}>
       <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_180px_180px]">
         <label className="relative">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -857,6 +974,7 @@ function PaymentsView(props: {
                   <td className="px-3 py-3 tabular">{money.format(payment.balance)}</td>
                   <td className="px-3 py-3">
                     <div className="flex gap-1">
+                      <IconButton label="Edit payment" icon={Pencil} onClick={() => props.onEdit(payment)} glow />
                       <IconButton label="Print receipt" icon={Printer} onClick={() => props.onPrint(payment)} />
                       <IconButton label="Move to trash" icon={Trash2} onClick={() => props.onDelete(payment)} />
                     </div>
@@ -975,7 +1093,7 @@ function PayersView({
                   <p className="font-semibold text-slate-950">{payer.fullName}</p>
                   <span className="rounded bg-slate-100 px-2 py-1 text-xs font-medium capitalize text-slate-600">{payer.type}</span>
                 </div>
-                <p className="mt-2 text-sm text-slate-500">{payer.email}</p>
+                <p className="mt-2 text-sm text-slate-500">{payer.email || "No email saved"}</p>
                 <div className="mt-3 flex justify-between text-sm tabular">
                   <span>{money.format(paid)} paid</span>
                   <span style={{ color: activeBrand.alert }}>{money.format(Math.max(totalDue - paid, 0))} due</span>
@@ -1005,55 +1123,71 @@ function AddPaymentView({
   scope,
   payers,
   savedFlash,
+  editContext,
+  onCancelEdit,
   onSubmit,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
   scope: BusinessScope;
   payers: Payer[];
   savedFlash: boolean;
+  editContext?: EditPaymentContext;
+  onCancelEdit: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const defaultBusiness = scope === "graphics" ? "graphics" : "scds";
-  const [form, setForm] = useState<FormState>({
-    businessId: defaultBusiness,
-    payerId: "",
+  const buildInitialForm = (): FormState => ({
+    businessId: editContext?.payment.businessId ?? defaultBusiness,
+    payerId: editContext?.payment.payerId ?? "",
     newPayerName: "",
     newPayerPhone: "",
     newPayerEmail: "",
-    itemTitle: "",
-    totalDue: "",
-    amount: "",
-    method: "M-Pesa",
-    mpesaCode: "",
-    date: today,
-    notes: "",
+    itemTitle: editContext?.item.title ?? "",
+    totalDue: editContext ? String(editContext.item.totalAmount) : "",
+    amount: editContext ? String(editContext.payment.amount) : "",
+    method: editContext?.payment.method ?? "M-Pesa",
+    mpesaCode: editContext?.payment.mpesaCode ?? "",
+    date: editContext?.payment.date ?? today,
+    dueDate: editContext?.item.dueDate ?? today,
+    notes: editContext?.payment.notes ?? "",
   });
-  const balance = Math.max(Number(form.totalDue || 0) - Number(form.amount || 0), 0);
+  const [form, setForm] = useState<FormState>(buildInitialForm);
+  const isEditing = Boolean(editContext);
+  const balance = Math.max(Number(form.totalDue || 0) - Number(form.amount || 0) - (editContext?.otherPaidForItem ?? 0), 0);
   const businessPayers = payers.filter((payer) => payer.businessId === form.businessId);
 
+  useEffect(() => {
+    setForm(buildInitialForm());
+  }, [editContext?.payment.id, scope]);
+
+  const updateForm = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    setForm((current) => ({ ...current, [event.target.name]: event.target.value }));
+  };
+
   return (
-    <Panel title="Add Payment" icon={Plus}>
+    <Panel title={isEditing ? "Edit Payment" : "Add Payment"} icon={isEditing ? Pencil : Plus}>
       {savedFlash && (
         <div className="mb-4 rounded border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
           Payment saved. WhatsApp and Gmail compose windows were opened when contact details were available.
         </div>
       )}
       <form
-        onSubmit={onSubmit}
-        className="grid gap-4 lg:grid-cols-2"
-        onChange={(event) => {
-          const target = event.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-          setForm((current) => ({ ...current, [target.name]: target.value }));
+        onSubmit={(event) => {
+          onSubmit(event);
+          if (!isEditing) {
+            setForm(buildInitialForm());
+          }
         }}
+        className="grid gap-4 lg:grid-cols-2"
       >
         <Field label="Business">
-          <select name="businessId" defaultValue={defaultBusiness} className="input">
+          <select name="businessId" value={form.businessId} onChange={updateForm} className="input" disabled={isEditing}>
             <option value="scds">Sam Creative Design School</option>
             <option value="graphics">Sam Creative Graphics</option>
           </select>
         </Field>
         <Field label="Existing payer">
-          <select name="payerId" className="input" required={!form.newPayerName}>
+          <select name="payerId" value={form.payerId} onChange={updateForm} className="input" required={!form.newPayerName} disabled={isEditing}>
             <option value="">Select payer or add new below</option>
             {businessPayers.map((payer) => (
               <option key={payer.id} value={payer.id}>{payer.fullName}</option>
@@ -1061,25 +1195,25 @@ function AddPaymentView({
           </select>
         </Field>
         <Field label="New payer name">
-          <input name="newPayerName" className="input" placeholder="Optional" />
+          <input name="newPayerName" value={form.newPayerName} onChange={updateForm} className="input" placeholder="Optional" disabled={isEditing} />
         </Field>
         <Field label="New payer phone">
-          <input name="newPayerPhone" className="input" placeholder="+254 ..." />
+          <input name="newPayerPhone" value={form.newPayerPhone} onChange={updateForm} className="input" placeholder="+254 ..." disabled={isEditing} />
         </Field>
-        <Field label="New payer email">
-          <input name="newPayerEmail" type="email" className="input" placeholder="name@example.com" />
+        <Field label="New payer email (optional)">
+          <input name="newPayerEmail" value={form.newPayerEmail} onChange={updateForm} type="email" className="input" placeholder="name@example.com" disabled={isEditing} />
         </Field>
         <Field label="Course or project">
-          <input name="itemTitle" className="input" required placeholder="Course/project name" />
+          <input name="itemTitle" value={form.itemTitle} onChange={updateForm} className="input" required placeholder="Course/project name" />
         </Field>
         <Field label="Total amount due">
-          <input name="totalDue" type="number" min="0" className="input tabular" required />
+          <input name="totalDue" value={form.totalDue} onChange={updateForm} type="number" min="0" className="input tabular" required />
         </Field>
-        <Field label="Amount paid now">
-          <input name="amount" type="number" min="0" className="input tabular" required />
+        <Field label={isEditing ? "Payment amount" : "Amount paid now"}>
+          <input name="amount" value={form.amount} onChange={updateForm} type="number" min="0" className="input tabular" required />
         </Field>
         <Field label="Payment method">
-          <select name="method" className="input">
+          <select name="method" value={form.method} onChange={updateForm} className="input">
             <option>M-Pesa</option>
             <option>Cash</option>
             <option>Bank Transfer</option>
@@ -1087,18 +1221,18 @@ function AddPaymentView({
         </Field>
         {form.method === "M-Pesa" && (
           <Field label="M-Pesa transaction code">
-            <input name="mpesaCode" className="input uppercase" placeholder="TH..." />
+            <input name="mpesaCode" value={form.mpesaCode} onChange={updateForm} className="input uppercase" placeholder="TH..." />
           </Field>
         )}
         <Field label="Payment date">
-          <input name="date" type="date" defaultValue={today} className="input tabular" />
+          <input name="date" type="date" value={form.date} onChange={updateForm} className="input tabular" />
         </Field>
         <Field label="Due date">
-          <input name="dueDate" type="date" defaultValue={today} className="input tabular" />
+          <input name="dueDate" type="date" value={form.dueDate} onChange={updateForm} className="input tabular" />
         </Field>
         <div className="lg:col-span-2">
           <Field label="Notes">
-            <textarea name="notes" rows={4} className="input resize-y" />
+            <textarea name="notes" value={form.notes} onChange={updateForm} rows={4} className="input resize-y" />
           </Field>
         </div>
         <div className="rounded border border-slate-200 bg-slate-50 p-4">
@@ -1107,21 +1241,37 @@ function AddPaymentView({
             {money.format(balance)}
           </p>
         </div>
-        <div className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-600">
-          <div className="flex items-center gap-2 font-semibold text-slate-800">
-            <MessageCircle className="h-4 w-4" />
-            <Mail className="h-4 w-4" />
-            Auto message
+        {!isEditing ? (
+          <div className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-600">
+            <div className="flex items-center gap-2 font-semibold text-slate-800">
+              <MessageCircle className="h-4 w-4" />
+              <Mail className="h-4 w-4" />
+              Auto message
+            </div>
+            <p className="mt-2">Saving opens WhatsApp and Gmail when contact details are available.</p>
           </div>
-          <p className="mt-2">Saving opens WhatsApp and Gmail with a ready payment confirmation for the payer.</p>
-        </div>
-        <div className="flex items-end justify-end">
+        ) : (
+          <div className="rounded border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+            Paid records can be corrected here. The audit ledger will mark this payment as edited.
+          </div>
+        )}
+        <div className="flex flex-wrap items-end justify-end gap-2">
+          {isEditing && (
+            <button
+              type="button"
+              onClick={onCancelEdit}
+              className="inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            >
+              <X className="h-4 w-4" />
+              Cancel
+            </button>
+          )}
           <button
-            className="inline-flex items-center gap-2 rounded px-5 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2"
+            className="money-glow-button inline-flex items-center gap-2 rounded px-5 py-2.5 text-sm font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-offset-2"
             style={{ backgroundColor: activeBrand.accent }}
           >
-            <Plus className="h-4 w-4" />
-            Save Payment
+            {isEditing ? <Save className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            {isEditing ? "Save Changes" : "Save Payment"}
           </button>
         </div>
       </form>
@@ -1403,7 +1553,7 @@ function PaymentConfidenceBadge({ issues }: { issues: ConfidenceIssue[] }) {
 
 function MetricCard({ label, value, icon: Icon, color }: { label: string; value: string; icon: LucideIcon; color: string }) {
   return (
-    <div className="rounded border border-slate-200 bg-white p-5 shadow-soft" style={{ borderTopColor: color, borderTopWidth: 3 }}>
+    <div className="money-glow-card rounded border border-slate-200 bg-white p-5 shadow-soft" style={{ borderTopColor: color, borderTopWidth: 3, "--glow-color": color } as React.CSSProperties}>
       <div className="flex items-center justify-between gap-4">
         <p className="text-xs font-semibold uppercase text-slate-500">{label}</p>
         <Icon className="h-5 w-5" style={{ color }} />
@@ -1490,13 +1640,13 @@ function StatusBadge({
   );
 }
 
-function IconButton({ label, icon: Icon, onClick }: { label: string; icon: LucideIcon; onClick: () => void }) {
+function IconButton({ label, icon: Icon, onClick, glow = false }: { label: string; icon: LucideIcon; onClick: () => void; glow?: boolean }) {
   return (
     <button
       aria-label={label}
       title={label}
       onClick={onClick}
-      className="inline-flex h-9 w-9 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:text-slate-950 focus:outline-none focus:ring-2 focus:ring-slate-300"
+      className={`inline-flex h-9 w-9 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:text-slate-950 focus:outline-none focus:ring-2 focus:ring-slate-300 ${glow ? "money-glow-icon" : ""}`}
     >
       <Icon className="h-4 w-4" />
     </button>

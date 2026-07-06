@@ -6,6 +6,46 @@
   .input {
     @apply w-full rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:ring-2 focus:ring-slate-200;
   }
+
+  .money-glow-button {
+    box-shadow: 0 10px 24px rgba(31, 110, 82, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+  }
+
+  .money-glow-button:hover {
+    filter: saturate(1.08) brightness(1.04);
+    box-shadow: 0 14px 34px rgba(217, 164, 65, 0.28), 0 0 22px rgba(31, 110, 82, 0.2);
+  }
+
+  .money-glow-icon {
+    color: #1f6e52;
+    border-color: rgba(31, 110, 82, 0.22);
+    box-shadow: 0 8px 22px rgba(31, 110, 82, 0.12), 0 0 0 1px rgba(217, 164, 65, 0.1) inset;
+  }
+
+  .money-glow-icon:hover {
+    color: #172033;
+    border-color: rgba(217, 164, 65, 0.5);
+    box-shadow: 0 10px 26px rgba(217, 164, 65, 0.22), 0 0 18px rgba(31, 110, 82, 0.16);
+  }
+
+  .money-glow-card {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .money-glow-card::after {
+    background: radial-gradient(circle at 88% 18%, color-mix(in srgb, var(--glow-color, #1f6e52) 24%, transparent), transparent 36%);
+    content: "";
+    inset: 0;
+    opacity: 0.72;
+    pointer-events: none;
+    position: absolute;
+  }
+
+  .money-glow-card > * {
+    position: relative;
+    z-index: 1;
+  }
 }
 
 :root {
