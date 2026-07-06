@@ -175,6 +175,35 @@ function openPaymentNotifications(details: PaymentNotificationDetails) {
   }
 }
 
+function buildReceiptShareMessage(payment: EnrichedPayment) {
+  const business = businesses[payment.businessId];
+
+  return [
+    `Hello ${payment.payerName},`,
+    "",
+    `Thank you. This is your payment receipt summary from ${business.name}.`,
+    "",
+    "Receipt summary:",
+    `- Amount received: ${money.format(payment.amount)}`,
+    `- Service/project: ${payment.itemTitle}`,
+    `- Payment method: ${payment.method}`,
+    payment.mpesaCode ? `- M-Pesa code: ${payment.mpesaCode}` : null,
+    `- Payment date: ${payment.date}`,
+    `- Remaining balance: ${money.format(payment.balance)}`,
+    "",
+    "Please keep this message for your records. If anything needs correction, kindly let us know.",
+    "",
+    "Warm regards,",
+    business.name,
+  ].filter((line) => line !== null).join("\n");
+}
+
+function openReceiptShare(payment: EnrichedPayment) {
+  const whatsappPhone = normalizeWhatsAppPhone(payment.payerPhone);
+  if (!whatsappPhone) return;
+  window.open(`https://wa.me/${whatsappPhone}?text=${encodeURIComponent(buildReceiptShareMessage(payment))}`, "_blank", "noopener,noreferrer");
+}
+
 function buildBalanceReminderMessage(item: FollowUpItem) {
   const business = businesses[item.businessId];
   const timing = item.daysUntilDue < 0
@@ -340,6 +369,12 @@ function App() {
     }),
     [totalsVisible],
   );
+
+  useEffect(() => {
+    if (!totalsVisible) return undefined;
+    const timeoutId = window.setTimeout(() => setTotalsVisible(false), 120_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [totalsVisible]);
 
   const activeBrand = scope === "graphics" ? businesses.graphics : businesses.scds;
   const visibleBusinessIds = scope === "combined" ? (["scds", "graphics"] as BusinessId[]) : [scope];
@@ -1030,6 +1065,7 @@ function App() {
                 setCustomTo={setCustomTo}
                 onExportFollowUps={exportFollowUps}
                 onPrint={printReceipt}
+                onShareReceipt={openReceiptShare}
               />
             )}
             {view === "payments" && (
@@ -1052,6 +1088,7 @@ function App() {
                 onEdit={startEditingPayment}
                 onDelete={softDelete}
                 onPrint={printReceipt}
+                onShareReceipt={openReceiptShare}
                 onExport={exportCsv}
               />
             )}
@@ -1073,6 +1110,7 @@ function App() {
                 setSelectedPayerId={setSelectedPayerId}
                 auditLog={auditLog}
                 onPrint={printReceipt}
+                onShareReceipt={openReceiptShare}
                 onCloseBalance={closeItemBalance}
               />
             )}
@@ -1290,6 +1328,7 @@ function Dashboard({
   setCustomTo,
   onExportFollowUps,
   onPrint,
+  onShareReceipt,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
   totalCollected: number;
@@ -1308,6 +1347,7 @@ function Dashboard({
   setCustomTo: (value: string) => void;
   onExportFollowUps: () => void;
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
+  onShareReceipt: (payment: EnrichedPayment) => void;
 }) {
   const { formatMoney } = useMoneyPrivacy();
 
@@ -1345,7 +1385,7 @@ function Dashboard({
           </div>
         </Panel>
         <Panel title="Recent Payments" icon={CalendarDays}>
-          <CompactPayments payments={recent} onPrint={onPrint} />
+          <CompactPayments payments={recent} onPrint={onPrint} onShareReceipt={onShareReceipt} />
         </Panel>
       </section>
       <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
@@ -1455,6 +1495,7 @@ function PaymentsView(props: {
   onEdit: (payment: EnrichedPayment) => void;
   onDelete: (payment: Payment) => void;
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
+  onShareReceipt: (payment: EnrichedPayment) => void;
   onExport: () => void;
 }) {
   const visiblePayments = props.payments.filter((payment) => !payment.isDeleted);
@@ -1531,6 +1572,7 @@ function PaymentsView(props: {
             {visiblePayments.length ? (
               visiblePayments.map((payment) => {
                 const canRemindBalance = payment.balance > 0 && Boolean(normalizeWhatsAppPhone(payment.payerPhone));
+                const canShareReceipt = Boolean(normalizeWhatsAppPhone(payment.payerPhone));
 
                 return (
                   <tr key={payment.id} className="border-b border-slate-100 bg-white">
@@ -1559,6 +1601,13 @@ function PaymentsView(props: {
                         )}
                         <IconButton label="Edit payment" icon={Pencil} onClick={() => props.onEdit(payment)} glow={!canRemindBalance} />
                         <IconButton label="Print receipt" icon={Printer} onClick={() => props.onPrint(payment)} />
+                        {canShareReceipt && (
+                          <IconButton
+                            label="Share receipt on WhatsApp"
+                            icon={MessageCircle}
+                            onClick={() => props.onShareReceipt(payment)}
+                          />
+                        )}
                         <IconButton label="Move to trash" icon={Trash2} onClick={() => props.onDelete(payment)} />
                       </div>
                     </td>
@@ -1651,6 +1700,7 @@ function PayersView({
   setSelectedPayerId,
   auditLog,
   onPrint,
+  onShareReceipt,
   onCloseBalance,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
@@ -1661,6 +1711,7 @@ function PayersView({
   setSelectedPayerId: (id: string) => void;
   auditLog: AuditEntry[];
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
+  onShareReceipt: (payment: EnrichedPayment) => void;
   onCloseBalance: (itemId: string, reason?: string) => void;
 }) {
   const { formatMoney } = useMoneyPrivacy();
@@ -1702,7 +1753,7 @@ function PayersView({
       </Panel>
       <Panel title={selectedPayer ? selectedPayer.fullName : "Profile Details"} icon={BriefcaseBusiness}>
         {selectedPayer ? (
-          <ProfileDetails payer={selectedPayer} items={items} payments={payments} auditLog={auditLog} activeBrand={activeBrand} onPrint={onPrint} onCloseBalance={onCloseBalance} />
+          <ProfileDetails payer={selectedPayer} items={items} payments={payments} auditLog={auditLog} activeBrand={activeBrand} onPrint={onPrint} onShareReceipt={onShareReceipt} onCloseBalance={onCloseBalance} />
         ) : (
           <p className="text-sm text-slate-500">Select a payer to inspect balances, history, and audit entries.</p>
         )}
@@ -2018,6 +2069,7 @@ function ProfileDetails({
   auditLog,
   activeBrand,
   onPrint,
+  onShareReceipt,
   onCloseBalance,
 }: {
   payer: Payer;
@@ -2026,6 +2078,7 @@ function ProfileDetails({
   auditLog: AuditEntry[];
   activeBrand: (typeof businesses)[BusinessId];
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
+  onShareReceipt: (payment: EnrichedPayment) => void;
   onCloseBalance: (itemId: string, reason?: string) => void;
 }) {
   const { formatMoney } = useMoneyPrivacy();
@@ -2125,7 +2178,12 @@ function ProfileDetails({
                   <td><StatusBadge status={payment.status} brand={activeBrand} edited={payment.edited} /></td>
                   <td>{payment.method}</td>
                   <td>
-                    <IconButton label="Download receipt" icon={Download} onClick={() => onPrint(enrichedPayment)} glow />
+                    <div className="flex gap-1">
+                      <IconButton label="Download receipt" icon={Download} onClick={() => onPrint(enrichedPayment)} glow />
+                      {normalizeWhatsAppPhone(enrichedPayment.payerPhone) && (
+                        <IconButton label="Share receipt on WhatsApp" icon={MessageCircle} onClick={() => onShareReceipt(enrichedPayment)} />
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -2385,7 +2443,15 @@ function Panel({
   );
 }
 
-function CompactPayments({ payments, onPrint }: { payments: EnrichedPayment[]; onPrint: (payment: EnrichedPayment) => void | Promise<void> }) {
+function CompactPayments({
+  payments,
+  onPrint,
+  onShareReceipt,
+}: {
+  payments: EnrichedPayment[];
+  onPrint: (payment: EnrichedPayment) => void | Promise<void>;
+  onShareReceipt: (payment: EnrichedPayment) => void;
+}) {
   const { formatMoney } = useMoneyPrivacy();
 
   return (
@@ -2399,7 +2465,12 @@ function CompactPayments({ payments, onPrint }: { payments: EnrichedPayment[]; o
             </div>
             <div className="text-right">
               <p className="font-semibold tabular">{formatMoney(payment.amount)}</p>
-              <button className="text-xs font-semibold text-slate-500 hover:text-slate-950" onClick={() => onPrint(payment)}>Receipt</button>
+              <div className="mt-1 flex justify-end gap-2 text-xs font-semibold">
+                <button className="text-slate-500 hover:text-slate-950" onClick={() => onPrint(payment)}>Receipt</button>
+                {normalizeWhatsAppPhone(payment.payerPhone) && (
+                  <button className="text-slate-500 hover:text-slate-950" onClick={() => onShareReceipt(payment)}>WhatsApp</button>
+                )}
+              </div>
             </div>
           </div>
         ))
