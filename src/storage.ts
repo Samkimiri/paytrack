@@ -25,6 +25,36 @@ type LoadResult = {
   error?: string;
 };
 
+const legacyDemoIds = new Set([
+  "p-001",
+  "p-002",
+  "p-003",
+  "p-004",
+  "i-001",
+  "i-002",
+  "i-003",
+  "i-004",
+  "pay-001",
+  "pay-002",
+  "pay-003",
+  "pay-004",
+  "a-001",
+  "a-002",
+  "a-003",
+]);
+
+const legacyDemoNames = new Set([
+  "Amina Otieno",
+  "Brian Mwangi",
+  "Nia Naturals Ltd",
+  "Karibu Foods",
+]);
+
+type SanitizedData = {
+  data: AppData;
+  changed: boolean;
+};
+
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
@@ -50,10 +80,50 @@ function normalizeData(data: Partial<AppData> | null | undefined): AppData {
   };
 }
 
+function removeLegacyDemoRecords(data: AppData): SanitizedData {
+  const payers = data.payers.filter((payer) => !legacyDemoIds.has(payer.id) && !legacyDemoNames.has(payer.fullName));
+  const payerIds = new Set(payers.map((payer) => payer.id));
+  const items = data.items.filter((item) => !legacyDemoIds.has(item.id) && payerIds.has(item.payerId));
+  const itemIds = new Set(items.map((item) => item.id));
+  const payments = data.payments.filter(
+    (payment) =>
+      !legacyDemoIds.has(payment.id) &&
+      payerIds.has(payment.payerId) &&
+      itemIds.has(payment.itemId),
+  );
+  const paymentIds = new Set(payments.map((payment) => payment.id));
+  const auditLog = data.auditLog.filter(
+    (entry) => !legacyDemoIds.has(entry.id) && paymentIds.has(entry.paymentId),
+  );
+
+  const changed =
+    payers.length !== data.payers.length ||
+    items.length !== data.items.length ||
+    payments.length !== data.payments.length ||
+    auditLog.length !== data.auditLog.length;
+
+  return {
+    data: {
+      payers,
+      items,
+      payments,
+      auditLog,
+    },
+    changed,
+  };
+}
+
 function loadBrowserData(): AppData {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw ? normalizeData(JSON.parse(raw) as Partial<AppData>) : defaultAppData;
+    const data = raw ? normalizeData(JSON.parse(raw) as Partial<AppData>) : defaultAppData;
+    const sanitized = removeLegacyDemoRecords(data);
+
+    if (sanitized.changed) {
+      saveBrowserData(sanitized.data);
+    }
+
+    return sanitized.data;
   } catch {
     return defaultAppData;
   }
@@ -63,7 +133,7 @@ function saveBrowserData(data: AppData) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
-async function loadSupabaseData(): Promise<AppData | null> {
+async function loadSupabaseData(): Promise<SanitizedData | null> {
   if (!canUseSupabase()) return null;
 
   const response = await fetch(
@@ -76,7 +146,7 @@ async function loadSupabaseData(): Promise<AppData | null> {
   }
 
   const rows = (await response.json()) as SupabaseSnapshot[];
-  return rows[0]?.payload ? normalizeData(rows[0].payload) : null;
+  return rows[0]?.payload ? removeLegacyDemoRecords(normalizeData(rows[0].payload)) : null;
 }
 
 async function saveSupabaseData(data: AppData): Promise<void> {
@@ -100,10 +170,10 @@ async function saveSupabaseData(data: AppData): Promise<void> {
 export async function loadAppData(): Promise<LoadResult> {
   if (canUseSupabase()) {
     try {
-      const supabaseData = await loadSupabaseData();
-      const data = supabaseData ?? defaultAppData;
+      const supabaseResult = await loadSupabaseData();
+      const data = supabaseResult?.data ?? defaultAppData;
 
-      if (!supabaseData) {
+      if (!supabaseResult || supabaseResult.changed) {
         await saveSupabaseData(data);
       }
 
