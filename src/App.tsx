@@ -103,18 +103,26 @@ function normalizeWhatsAppPhone(phone: string) {
 function buildPaymentMessage({ payer, item, payment }: PaymentNotificationDetails) {
   const business = businesses[payment.businessId];
   const balance = Math.max(item.totalAmount - payment.amount, 0);
-  const lines = [
+  const lines: Array<string | null> = [
     `Hello ${payer.fullName},`,
-    `We have received your payment of ${money.format(payment.amount)} for ${item.title}.`,
-    `Payment method: ${payment.method}`,
-    payment.mpesaCode ? `M-Pesa code: ${payment.mpesaCode}` : "",
-    `Payment date: ${payment.date}`,
-    `Balance: ${money.format(balance)}`,
     "",
-    `Thank you, ${business.name}.`,
+    `Thank you for trusting ${business.name} with ${item.title}. We are pleased to confirm that your payment of ${money.format(payment.amount)} has been received.`,
+    "",
+    "Payment summary:",
+    `- Amount received: ${money.format(payment.amount)}`,
+    `- Service/project: ${item.title}`,
+    `- Payment method: ${payment.method}`,
+    payment.mpesaCode ? `- M-Pesa code: ${payment.mpesaCode}` : null,
+    `- Payment date: ${payment.date}`,
+    `- Remaining balance: ${money.format(balance)}`,
+    "",
+    "We genuinely appreciate the opportunity to work with you. If you need more creative support, training, design work, or a follow-up service, we would be glad to help again and continue building on the work we have done together.",
+    "",
+    `Warm regards,`,
+    `${business.name}`,
   ];
 
-  return lines.filter(Boolean).join("\n");
+  return lines.filter((line) => line !== null).join("\n");
 }
 
 function openPaymentNotifications(details: PaymentNotificationDetails) {
