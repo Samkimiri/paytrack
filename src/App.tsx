@@ -221,7 +221,8 @@ function App() {
   const [auditLog, setAuditLog] = useState<AuditEntry[]>(defaultAppData.auditLog);
   const [hydrated, setHydrated] = useState(false);
   const [storageBackend, setStorageBackend] = useState<StorageBackend>("browser");
-  const [saveState, setSaveState] = useState<"loading" | "saved" | "saving">("loading");
+  const [saveState, setSaveState] = useState<"loading" | "saved" | "saving" | "error">("loading");
+  const [storageError, setStorageError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [methodFilter, setMethodFilter] = useState<"all" | PaymentMethod>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | PaymentStatus>("all");
@@ -290,14 +291,15 @@ function App() {
   useEffect(() => {
     let active = true;
 
-    loadAppData().then(({ data, backend }) => {
+    loadAppData().then(({ data, backend, error }) => {
       if (!active) return;
       setPayers(data.payers);
       setItems(data.items);
       setPayments(data.payments);
       setAuditLog(data.auditLog);
       setStorageBackend(backend);
-      setSaveState("saved");
+      setStorageError(error ?? null);
+      setSaveState(error ? "error" : "saved");
       setHydrated(true);
     });
 
@@ -311,9 +313,10 @@ function App() {
 
     const handle = window.setTimeout(() => {
       setSaveState("saving");
-      saveAppData({ payers, items, payments, auditLog }).then(({ backend }) => {
+      saveAppData({ payers, items, payments, auditLog }).then(({ backend, error }) => {
         setStorageBackend(backend);
-        setSaveState("saved");
+        setStorageError(error ?? null);
+        setSaveState(error ? "error" : "saved");
       });
     }, 250);
 
@@ -588,8 +591,17 @@ function App() {
               <div className="mt-4 rounded bg-white/10 px-3 py-2">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-white/55">Storage</p>
                 <p className="mt-1 font-medium text-white">
-                  {saveState === "loading" ? "Loading records" : saveState === "saving" ? "Saving records" : `Saved to ${storageBackend}`}
+                  {saveState === "loading"
+                    ? "Loading online records"
+                    : saveState === "saving"
+                      ? "Saving online"
+                      : saveState === "error"
+                        ? "Online sync failed"
+                        : storageBackend === "supabase"
+                          ? "Saved online"
+                          : "Saved locally"}
                 </p>
+                {storageError && <p className="mt-1 text-xs text-white/60">{storageError}</p>}
               </div>
             </div>
           </div>
@@ -1105,7 +1117,7 @@ function SettingsView({ activeBrand }: { activeBrand: (typeof businesses)[Busine
         <div className="rounded border border-slate-200 bg-white p-5">
           <p className="font-semibold text-slate-950">Supabase connection</p>
           <p className="mt-2 text-sm text-slate-500">
-            Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env.local, then run the SQL in supabase/schema.sql.
+            Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env.local, then run supabase/schema.sql so records sync online.
           </p>
         </div>
         <div className="rounded border border-slate-200 bg-white p-5">

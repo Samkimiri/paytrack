@@ -11,7 +11,9 @@ npm run dev
 
 Copy `.env.example` to `.env.local` and add Supabase credentials before deploying.
 
-Production records sync to the `app_state_snapshots` table in Supabase. Browser storage is only a local development fallback so payment-entry workflows can be tested without writing to production data.
+Production records sync to the `app_state_snapshots` table in Supabase. Browser storage is only a local development fallback when Supabase credentials are missing or online sync fails.
+
+Run `supabase/schema.sql` in your Supabase SQL editor after creating the project. The schema includes rerunnable policies for the shared online app snapshot used by the deployed frontend.
 
 ## Backend
 

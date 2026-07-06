@@ -12,10 +12,17 @@ export const defaultAppData: AppData = {
 
 type PersistResult = {
   backend: StorageBackend;
+  error?: string;
 };
 
 type SupabaseSnapshot = {
   payload: AppData;
+};
+
+type LoadResult = {
+  data: AppData;
+  backend: StorageBackend;
+  error?: string;
 };
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -64,14 +71,16 @@ async function loadSupabaseData(): Promise<AppData | null> {
     { headers: headers() },
   );
 
-  if (!response.ok) return null;
+  if (!response.ok) {
+    throw new Error(`Supabase load failed (${response.status})`);
+  }
 
   const rows = (await response.json()) as SupabaseSnapshot[];
   return rows[0]?.payload ? normalizeData(rows[0].payload) : null;
 }
 
-async function saveSupabaseData(data: AppData): Promise<boolean> {
-  if (!canUseSupabase()) return false;
+async function saveSupabaseData(data: AppData): Promise<void> {
+  if (!canUseSupabase()) return;
 
   const response = await fetch(`${supabaseUrl}/rest/v1/app_state_snapshots?on_conflict=id`, {
     method: "POST",
@@ -83,14 +92,30 @@ async function saveSupabaseData(data: AppData): Promise<boolean> {
     }),
   });
 
-  return response.ok;
+  if (!response.ok) {
+    throw new Error(`Supabase save failed (${response.status})`);
+  }
 }
 
-export async function loadAppData(): Promise<{ data: AppData; backend: StorageBackend }> {
-  const supabaseData = await loadSupabaseData().catch(() => null);
-  if (supabaseData) {
-    saveBrowserData(supabaseData);
-    return { data: supabaseData, backend: "supabase" };
+export async function loadAppData(): Promise<LoadResult> {
+  if (canUseSupabase()) {
+    try {
+      const supabaseData = await loadSupabaseData();
+      const data = supabaseData ?? defaultAppData;
+
+      if (!supabaseData) {
+        await saveSupabaseData(data);
+      }
+
+      saveBrowserData(data);
+      return { data, backend: "supabase" };
+    } catch (error) {
+      return {
+        data: loadBrowserData(),
+        backend: "browser",
+        error: error instanceof Error ? error.message : "Supabase load failed",
+      };
+    }
   }
 
   return { data: loadBrowserData(), backend: "browser" };
@@ -98,6 +123,18 @@ export async function loadAppData(): Promise<{ data: AppData; backend: StorageBa
 
 export async function saveAppData(data: AppData): Promise<PersistResult> {
   saveBrowserData(data);
-  const savedToSupabase = await saveSupabaseData(data).catch(() => false);
-  return { backend: savedToSupabase ? "supabase" : "browser" };
+
+  if (!canUseSupabase()) {
+    return { backend: "browser", error: "Supabase is not configured" };
+  }
+
+  try {
+    await saveSupabaseData(data);
+    return { backend: "supabase" };
+  } catch (error) {
+    return {
+      backend: "browser",
+      error: error instanceof Error ? error.message : "Supabase save failed",
+    };
+  }
 }

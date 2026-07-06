@@ -228,6 +228,21 @@ as $$
   select auth.role() = 'authenticated'
 $$;
 
+drop policy if exists "admin read businesses" on public.businesses;
+drop policy if exists "admin write businesses" on public.businesses;
+drop policy if exists "admin read payers" on public.payers;
+drop policy if exists "admin write payers" on public.payers;
+drop policy if exists "admin read items" on public.items;
+drop policy if exists "admin write items" on public.items;
+drop policy if exists "admin read payments" on public.payments;
+drop policy if exists "admin write payments" on public.payments;
+drop policy if exists "admin read audit" on public.payment_audit_log;
+drop policy if exists "audit insert via trigger" on public.payment_audit_log;
+drop policy if exists "admin read app state" on public.app_state_snapshots;
+drop policy if exists "admin write app state" on public.app_state_snapshots;
+drop policy if exists "online app state read" on public.app_state_snapshots;
+drop policy if exists "online app state write" on public.app_state_snapshots;
+
 create policy "admin read businesses" on public.businesses for select using (public.is_admin());
 create policy "admin write businesses" on public.businesses for all using (public.is_admin()) with check (public.is_admin());
 create policy "admin read payers" on public.payers for select using (public.is_admin());
@@ -238,8 +253,8 @@ create policy "admin read payments" on public.payments for select using (public.
 create policy "admin write payments" on public.payments for all using (public.is_admin()) with check (public.is_admin());
 create policy "admin read audit" on public.payment_audit_log for select using (public.is_admin());
 create policy "audit insert via trigger" on public.payment_audit_log for insert with check (public.is_admin());
-create policy "admin read app state" on public.app_state_snapshots for select using (public.is_admin());
-create policy "admin write app state" on public.app_state_snapshots for all using (public.is_admin()) with check (public.is_admin());
+create policy "online app state read" on public.app_state_snapshots for select using (true);
+create policy "online app state write" on public.app_state_snapshots for all using (true) with check (true);
 
 insert into public.businesses (slug, name)
 values
