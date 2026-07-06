@@ -14,7 +14,6 @@ import {
   FileText,
   Home,
   LayoutDashboard,
-  Mail,
   Menu,
   MessageCircle,
   Pencil,
@@ -133,21 +132,10 @@ function buildPaymentMessage({ payer, item, payment }: PaymentNotificationDetail
 
 function openPaymentNotifications(details: PaymentNotificationDetails) {
   const message = buildPaymentMessage(details);
-  const subject = `Payment received - ${details.item.title}`;
   const whatsappPhone = normalizeWhatsAppPhone(details.payer.phone);
 
   if (whatsappPhone) {
     window.open(`https://wa.me/${whatsappPhone}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
-  }
-
-  if (details.payer.email) {
-    const gmailUrl = new URL("https://mail.google.com/mail/");
-    gmailUrl.searchParams.set("view", "cm");
-    gmailUrl.searchParams.set("fs", "1");
-    gmailUrl.searchParams.set("to", details.payer.email);
-    gmailUrl.searchParams.set("su", subject);
-    gmailUrl.searchParams.set("body", message);
-    window.open(gmailUrl.toString(), "_blank", "noopener,noreferrer");
   }
 }
 
@@ -157,7 +145,6 @@ const nav = [
   { id: "payments", label: "Payments", icon: ReceiptText },
   { id: "payers", label: "Clients/Students", icon: UsersRound },
   { id: "add", label: "Add Payment", icon: Plus },
-  { id: "trash", label: "Trash", icon: Trash2 },
   { id: "reports", label: "Reports", icon: FileText },
   { id: "settings", label: "Settings", icon: Settings },
 ] as const;
@@ -829,13 +816,6 @@ function App() {
                 onExport={exportCsv}
               />
             )}
-            {view === "trash" && (
-              <TrashView
-                activeBrand={activeBrand}
-                payments={trashPayments}
-                onRestore={restorePayment}
-              />
-            )}
             {view === "payers" && (
               <PayersView
                 activeBrand={activeBrand}
@@ -1136,6 +1116,8 @@ function PaymentsView(props: {
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
   onExport: () => void;
 }) {
+  const visiblePayments = props.payments.filter((payment) => !payment.isDeleted);
+
   return (
     <Panel title="Payment Records" icon={ReceiptText} action={<IconButton label="Export CSV" icon={Download} onClick={props.onExport} glow />}>
       <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_180px_180px]">
@@ -1179,9 +1161,9 @@ function PaymentsView(props: {
             </tr>
           </thead>
           <tbody>
-            {props.payments.length ? (
-              props.payments.map((payment) => (
-                <tr key={payment.id} className={`border-b border-slate-100 ${payment.isDeleted ? "bg-rose-50/70 text-slate-500" : "bg-white"}`}>
+            {visiblePayments.length ? (
+              visiblePayments.map((payment) => (
+                <tr key={payment.id} className="border-b border-slate-100 bg-white">
                   <td className="px-3 py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
                   <td className="px-3 py-3">
                     <p className="font-medium text-slate-950">{payment.payerName}</p>
@@ -1391,7 +1373,7 @@ function AddPaymentView({
     <Panel title={isEditing ? "Edit Payment" : "Add Payment"} icon={isEditing ? Pencil : Plus}>
       {savedFlash && (
         <div className="mb-4 rounded border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
-          Payment saved. WhatsApp and Gmail compose windows were opened when contact details were available.
+          Payment saved. WhatsApp was opened when a phone number was available.
         </div>
       )}
       <form
@@ -1468,10 +1450,9 @@ function AddPaymentView({
           <div className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-600">
             <div className="flex items-center gap-2 font-semibold text-slate-800">
               <MessageCircle className="h-4 w-4" />
-              <Mail className="h-4 w-4" />
-              Auto message
+              WhatsApp message
             </div>
-            <p className="mt-2">Saving opens WhatsApp and Gmail when contact details are available.</p>
+            <p className="mt-2">Saving opens WhatsApp when a phone number is available.</p>
           </div>
         ) : (
           <div className="rounded border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
