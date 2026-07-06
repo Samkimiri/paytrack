@@ -180,15 +180,16 @@ function buildBalanceReminderMessage(item: FollowUpItem) {
   const timing = item.daysUntilDue < 0
     ? `overdue by ${Math.abs(item.daysUntilDue)} day${Math.abs(item.daysUntilDue) === 1 ? "" : "s"}`
     : `due in ${item.daysUntilDue} day${item.daysUntilDue === 1 ? "" : "s"}`;
+  const dueDate = dateFmt.format(new Date(item.dueDate));
 
   return [
     `Hello ${item.payerName},`,
     "",
-    `This is a friendly reminder from ${business.name} about your balance of ${money.format(item.balance)} for ${item.itemTitle}.`,
-    `The payment is ${timing}.`,
+    `I hope you are doing well. This is a polite reminder from ${business.name} about the remaining balance of ${money.format(item.balance)} for ${item.itemTitle}.`,
+    `The balance was due on ${dueDate} and is currently ${timing}. Kindly complete the balance at your earliest convenience so we can close your account record smoothly.`,
     `You can pay via Buy Goods & Services Till: ${balanceTillNumber}.`,
     "",
-    "Please let us know once you have completed the payment, or if you need us to confirm the payment details.",
+    "Please let us know once you have completed the payment, or if you would like us to confirm any payment details.",
     "",
     "Warm regards,",
     business.name,
@@ -199,6 +200,26 @@ function openWhatsAppReminder(item: FollowUpItem) {
   const whatsappPhone = normalizeWhatsAppPhone(item.phone);
   if (!whatsappPhone) return;
   window.open(`https://wa.me/${whatsappPhone}?text=${encodeURIComponent(buildBalanceReminderMessage(item))}`, "_blank", "noopener,noreferrer");
+}
+
+function reminderFromPayment(payment: EnrichedPayment): FollowUpItem {
+  const due = new Date(`${payment.dueDate}T00:00:00`);
+  const current = new Date(`${today}T00:00:00`);
+  const daysUntilDue = Math.ceil((due.getTime() - current.getTime()) / 86_400_000);
+
+  return {
+    id: payment.itemId,
+    businessId: payment.businessId,
+    payerName: payment.payerName,
+    phone: payment.payerPhone,
+    email: payment.payerEmail,
+    itemTitle: payment.itemTitle,
+    dueDate: payment.dueDate,
+    balance: payment.balance,
+    daysUntilDue,
+    status: daysUntilDue < 0 ? "overdue" : daysUntilDue <= 14 ? "due-soon" : "scheduled",
+    lastPaymentDate: payment.date,
+  };
 }
 
 const nav = [
@@ -1508,30 +1529,42 @@ function PaymentsView(props: {
           </thead>
           <tbody>
             {visiblePayments.length ? (
-              visiblePayments.map((payment) => (
-                <tr key={payment.id} className="border-b border-slate-100 bg-white">
-                  <td className="px-3 py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
-                  <td className="px-3 py-3">
-                    <p className="font-medium text-slate-950">{payment.payerName}</p>
-                    <PaymentConfidenceBadge issues={props.confidenceLedger.byPaymentId[payment.id] ?? []} />
-                  </td>
-                  <td className="px-3 py-3">{payment.businessName}</td>
-                  <td className="px-3 py-3">{payment.itemTitle}</td>
-                  <td className="px-3 py-3 font-semibold tabular">{formatMoney(payment.amount)}</td>
-                  <td className="px-3 py-3">{payment.method}</td>
-                  <td className="px-3 py-3">
-                    <StatusBadge status={payment.status} brand={props.activeBrand} edited={payment.edited} />
-                  </td>
-                  <td className="px-3 py-3 tabular">{formatMoney(payment.balance)}</td>
-                  <td className="px-3 py-3">
-                    <div className="flex gap-1">
-                      <IconButton label="Edit payment" icon={Pencil} onClick={() => props.onEdit(payment)} glow />
-                      <IconButton label="Print receipt" icon={Printer} onClick={() => props.onPrint(payment)} />
-                      <IconButton label="Move to trash" icon={Trash2} onClick={() => props.onDelete(payment)} />
-                    </div>
-                  </td>
-                </tr>
-              ))
+              visiblePayments.map((payment) => {
+                const canRemindBalance = payment.balance > 0 && Boolean(normalizeWhatsAppPhone(payment.payerPhone));
+
+                return (
+                  <tr key={payment.id} className="border-b border-slate-100 bg-white">
+                    <td className="px-3 py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
+                    <td className="px-3 py-3">
+                      <p className="font-medium text-slate-950">{payment.payerName}</p>
+                      <PaymentConfidenceBadge issues={props.confidenceLedger.byPaymentId[payment.id] ?? []} />
+                    </td>
+                    <td className="px-3 py-3">{payment.businessName}</td>
+                    <td className="px-3 py-3">{payment.itemTitle}</td>
+                    <td className="px-3 py-3 font-semibold tabular">{formatMoney(payment.amount)}</td>
+                    <td className="px-3 py-3">{payment.method}</td>
+                    <td className="px-3 py-3">
+                      <StatusBadge status={payment.status} brand={props.activeBrand} edited={payment.edited} />
+                    </td>
+                    <td className="px-3 py-3 tabular">{formatMoney(payment.balance)}</td>
+                    <td className="px-3 py-3">
+                      <div className="flex gap-1">
+                        {canRemindBalance && (
+                          <IconButton
+                            label="Send balance reminder"
+                            icon={MessageCircle}
+                            onClick={() => openWhatsAppReminder(reminderFromPayment(payment))}
+                            glow
+                          />
+                        )}
+                        <IconButton label="Edit payment" icon={Pencil} onClick={() => props.onEdit(payment)} glow={!canRemindBalance} />
+                        <IconButton label="Print receipt" icon={Printer} onClick={() => props.onPrint(payment)} />
+                        <IconButton label="Move to trash" icon={Trash2} onClick={() => props.onDelete(payment)} />
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
             ) : (
               <tr>
                 <td colSpan={9} className="px-3 py-10 text-center text-sm text-slate-500">
