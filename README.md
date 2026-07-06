@@ -9,9 +9,9 @@ npm install
 npm run dev
 ```
 
-Copy `.env.example` to `.env.local` and add Supabase credentials when you are ready to connect production data.
+Copy `.env.example` to `.env.local` and add Supabase credentials before deploying.
 
-When Supabase is configured, record changes sync to the `app_state_snapshots` table. Without Supabase credentials, the app still persists records in browser storage so payment updates survive refreshes on the same device.
+Production records sync to the `app_state_snapshots` table in Supabase. Browser storage is only a local development fallback so payment-entry workflows can be tested without writing to production data.
 
 ## Backend
 

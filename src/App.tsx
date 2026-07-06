@@ -1,5 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import jsPDF from "jspdf";
+import { FormEvent, Suspense, lazy, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -11,7 +10,9 @@ import {
   Download,
   FileText,
   LayoutDashboard,
+  Mail,
   Menu,
+  MessageCircle,
   Plus,
   Printer,
   ReceiptText,
@@ -19,23 +20,13 @@ import {
   Settings,
   ShieldCheck,
   Trash2,
-  Undo2,
   UsersRound,
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type React from "react";
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { businesses, initialAuditLog, initialItems, initialPayers, initialPayments } from "./data";
-import { loadAppData, saveAppData } from "./storage";
+import { businesses } from "./data";
+import { defaultAppData, loadAppData, saveAppData } from "./storage";
 import type {
   AuditEntry,
   BusinessId,
@@ -60,6 +51,91 @@ const dateFmt = new Intl.DateTimeFormat("en-KE", {
   day: "2-digit",
   year: "numeric",
 });
+
+type TrendPoint = { month: string; income: number };
+
+const IncomeTrendChart = lazy(async () => {
+  const { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } = await import("recharts");
+
+  return {
+    default: function IncomeTrendChartView({
+      trend,
+      accent,
+    }: {
+      trend: TrendPoint[];
+      accent: string;
+    }) {
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={trend} margin={{ left: 0, right: 8, top: 10, bottom: 0 }}>
+            <defs>
+              <linearGradient id="incomeFill" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="5%" stopColor={accent} stopOpacity={0.26} />
+                <stop offset="95%" stopColor={accent} stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid stroke="#E4E7EC" vertical={false} />
+            <XAxis dataKey="month" tickLine={false} axisLine={false} />
+            <YAxis tickFormatter={(value) => `${Number(value) / 1000}k`} tickLine={false} axisLine={false} width={48} />
+            <Tooltip formatter={(value) => money.format(Number(value))} />
+            <Area type="monotone" dataKey="income" stroke={accent} fill="url(#incomeFill)" strokeWidth={2} />
+          </AreaChart>
+        </ResponsiveContainer>
+      );
+    },
+  };
+});
+
+type PaymentNotificationDetails = {
+  payer: Payer;
+  item: Item;
+  payment: Payment;
+};
+
+function normalizeWhatsAppPhone(phone: string) {
+  const digits = phone.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("254")) return digits;
+  if (digits.startsWith("0")) return `254${digits.slice(1)}`;
+  return digits;
+}
+
+function buildPaymentMessage({ payer, item, payment }: PaymentNotificationDetails) {
+  const business = businesses[payment.businessId];
+  const balance = Math.max(item.totalAmount - payment.amount, 0);
+  const lines = [
+    `Hello ${payer.fullName},`,
+    `We have received your payment of ${money.format(payment.amount)} for ${item.title}.`,
+    `Payment method: ${payment.method}`,
+    payment.mpesaCode ? `M-Pesa code: ${payment.mpesaCode}` : "",
+    `Payment date: ${payment.date}`,
+    `Balance: ${money.format(balance)}`,
+    "",
+    `Thank you, ${business.name}.`,
+  ];
+
+  return lines.filter(Boolean).join("\n");
+}
+
+function openPaymentNotifications(details: PaymentNotificationDetails) {
+  const message = buildPaymentMessage(details);
+  const subject = `Payment received - ${details.item.title}`;
+  const whatsappPhone = normalizeWhatsAppPhone(details.payer.phone);
+
+  if (whatsappPhone) {
+    window.open(`https://wa.me/${whatsappPhone}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+  }
+
+  if (details.payer.email) {
+    const gmailUrl = new URL("https://mail.google.com/mail/");
+    gmailUrl.searchParams.set("view", "cm");
+    gmailUrl.searchParams.set("fs", "1");
+    gmailUrl.searchParams.set("to", details.payer.email);
+    gmailUrl.searchParams.set("su", subject);
+    gmailUrl.searchParams.set("body", message);
+    window.open(gmailUrl.toString(), "_blank", "noopener,noreferrer");
+  }
+}
 
 const nav = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -139,10 +215,10 @@ function App() {
     new URLSearchParams(window.location.search).get("action") === "add-payment" ? "add" : "dashboard",
   );
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [payers, setPayers] = useState<Payer[]>(initialPayers);
-  const [items, setItems] = useState<Item[]>(initialItems);
-  const [payments, setPayments] = useState<Payment[]>(initialPayments);
-  const [auditLog, setAuditLog] = useState<AuditEntry[]>(initialAuditLog);
+  const [payers, setPayers] = useState<Payer[]>(defaultAppData.payers);
+  const [items, setItems] = useState<Item[]>(defaultAppData.items);
+  const [payments, setPayments] = useState<Payment[]>(defaultAppData.payments);
+  const [auditLog, setAuditLog] = useState<AuditEntry[]>(defaultAppData.auditLog);
   const [hydrated, setHydrated] = useState(false);
   const [storageBackend, setStorageBackend] = useState<StorageBackend>("browser");
   const [saveState, setSaveState] = useState<"loading" | "saved" | "saving">("loading");
@@ -267,21 +343,28 @@ function App() {
     let payerId = state.payerId;
     const amount = Number(state.amount);
     const totalDue = Number(state.totalDue);
+    let notificationPayer = payers.find((payer) => payer.id === payerId);
 
     if (state.newPayerName.trim()) {
       payerId = crypto.randomUUID();
+      const newPayer: Payer = {
+        id: payerId,
+        businessId,
+        fullName: state.newPayerName.trim(),
+        phone: state.newPayerPhone.trim(),
+        email: state.newPayerEmail.trim(),
+        type: businessId === "scds" ? "student" : "client",
+        createdAt: new Date().toISOString(),
+      };
+      notificationPayer = newPayer;
       setPayers((current) => [
         ...current,
-        {
-          id: payerId,
-          businessId,
-          fullName: state.newPayerName.trim(),
-          phone: state.newPayerPhone,
-          email: state.newPayerEmail,
-          type: businessId === "scds" ? "student" : "client",
-          createdAt: new Date().toISOString(),
-        },
+        newPayer,
       ]);
+    }
+
+    if (!payerId || !notificationPayer) {
+      return;
     }
 
     const itemId = crypto.randomUUID();
@@ -318,6 +401,9 @@ function App() {
     setItems((current) => [...current, newItem]);
     setPayments((current) => [newPayment, ...current]);
     recordAudit(newPayment.id, "created", ["amount", "method", "status"]);
+    if (notificationPayer) {
+      openPaymentNotifications({ payer: notificationPayer, item: newItem, payment: newPayment });
+    }
     setSavedFlash(true);
     window.setTimeout(() => setSavedFlash(false), 1800);
     event.currentTarget.reset();
@@ -345,18 +431,8 @@ function App() {
     recordAudit(payment.id, "restored", ["is_deleted"], { is_deleted: true });
   }
 
-  function markEdited(payment: Payment) {
-    setPayments((current) =>
-      current.map((entry) =>
-        entry.id === payment.id
-          ? { ...entry, edited: true, notes: `${entry.notes} Updated after review.`, updatedAt: new Date().toISOString() }
-          : entry,
-      ),
-    );
-    recordAudit(payment.id, "edited", ["notes"], { notes: payment.notes });
-  }
-
-  function printReceipt(payment: EnrichedPayment) {
+  async function printReceipt(payment: EnrichedPayment) {
+    const { default: jsPDF } = await import("jspdf");
     const brand = businesses[payment.businessId];
     const doc = new jsPDF();
     doc.setFillColor(brand.primary);
@@ -574,7 +650,6 @@ function App() {
                 confidenceLedger={confidenceLedger}
                 onDelete={softDelete}
                 onRestore={restorePayment}
-                onEdit={markEdited}
                 onPrint={printReceipt}
                 onExport={exportCsv}
               />
@@ -635,12 +710,12 @@ function Dashboard({
   outstanding: number;
   transactions: number;
   activePayers: number;
-  trend: { month: string; income: number }[];
+  trend: TrendPoint[];
   recent: EnrichedPayment[];
   confidenceLedger: ConfidenceLedger;
   followUpLedger: FollowUpLedger;
   onExportFollowUps: () => void;
-  onPrint: (payment: EnrichedPayment) => void;
+  onPrint: (payment: EnrichedPayment) => void | Promise<void>;
 }) {
   return (
     <div className="space-y-6">
@@ -654,21 +729,9 @@ function Dashboard({
       <section className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
         <Panel title="6-Month Income Trend" icon={BarChart3}>
           <div className="h-80">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={trend} margin={{ left: 0, right: 8, top: 10, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="incomeFill" x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="5%" stopColor={activeBrand.accent} stopOpacity={0.26} />
-                    <stop offset="95%" stopColor={activeBrand.accent} stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="#E4E7EC" vertical={false} />
-                <XAxis dataKey="month" tickLine={false} axisLine={false} />
-                <YAxis tickFormatter={(value) => `${Number(value) / 1000}k`} tickLine={false} axisLine={false} width={48} />
-                <Tooltip formatter={(value) => money.format(Number(value))} />
-                <Area type="monotone" dataKey="income" stroke={activeBrand.accent} fill="url(#incomeFill)" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
+            <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-slate-500">Loading chart...</div>}>
+              <IncomeTrendChart trend={trend} accent={activeBrand.accent} />
+            </Suspense>
           </div>
         </Panel>
         <Panel title="Recent Payments" icon={CalendarDays}>
@@ -695,8 +758,7 @@ function PaymentsView(props: {
   confidenceLedger: ConfidenceLedger;
   onDelete: (payment: Payment) => void;
   onRestore: (payment: Payment) => void;
-  onEdit: (payment: Payment) => void;
-  onPrint: (payment: EnrichedPayment) => void;
+  onPrint: (payment: EnrichedPayment) => void | Promise<void>;
   onExport: () => void;
 }) {
   return (
@@ -742,34 +804,41 @@ function PaymentsView(props: {
             </tr>
           </thead>
           <tbody>
-            {props.payments.map((payment) => (
-              <tr key={payment.id} className={`border-b border-slate-100 ${payment.isDeleted ? "bg-rose-50/70 text-slate-500" : "bg-white"}`}>
-                <td className="px-3 py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
-                <td className="px-3 py-3">
-                  <p className="font-medium text-slate-950">{payment.payerName}</p>
-                  <PaymentConfidenceBadge issues={props.confidenceLedger.byPaymentId[payment.id] ?? []} />
-                </td>
-                <td className="px-3 py-3">{payment.businessName}</td>
-                <td className="px-3 py-3">{payment.itemTitle}</td>
-                <td className="px-3 py-3 font-semibold tabular">{money.format(payment.amount)}</td>
-                <td className="px-3 py-3">{payment.method}</td>
-                <td className="px-3 py-3">
-                  <StatusBadge status={payment.isDeleted ? "Deleted" : payment.status} brand={props.activeBrand} edited={payment.edited} />
-                </td>
-                <td className="px-3 py-3 tabular">{money.format(payment.balance)}</td>
-                <td className="px-3 py-3">
-                  <div className="flex gap-1">
-                    <IconButton label="Edit" icon={Undo2} onClick={() => props.onEdit(payment)} />
-                    <IconButton label="Print receipt" icon={Printer} onClick={() => props.onPrint(payment)} />
-                    {payment.isDeleted ? (
-                      <IconButton label="Restore" icon={ArchiveRestore} onClick={() => props.onRestore(payment)} />
-                    ) : (
-                      <IconButton label="Soft delete" icon={Trash2} onClick={() => props.onDelete(payment)} />
-                    )}
-                  </div>
+            {props.payments.length ? (
+              props.payments.map((payment) => (
+                <tr key={payment.id} className={`border-b border-slate-100 ${payment.isDeleted ? "bg-rose-50/70 text-slate-500" : "bg-white"}`}>
+                  <td className="px-3 py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
+                  <td className="px-3 py-3">
+                    <p className="font-medium text-slate-950">{payment.payerName}</p>
+                    <PaymentConfidenceBadge issues={props.confidenceLedger.byPaymentId[payment.id] ?? []} />
+                  </td>
+                  <td className="px-3 py-3">{payment.businessName}</td>
+                  <td className="px-3 py-3">{payment.itemTitle}</td>
+                  <td className="px-3 py-3 font-semibold tabular">{money.format(payment.amount)}</td>
+                  <td className="px-3 py-3">{payment.method}</td>
+                  <td className="px-3 py-3">
+                    <StatusBadge status={payment.isDeleted ? "Deleted" : payment.status} brand={props.activeBrand} edited={payment.edited} />
+                  </td>
+                  <td className="px-3 py-3 tabular">{money.format(payment.balance)}</td>
+                  <td className="px-3 py-3">
+                    <div className="flex gap-1">
+                      <IconButton label="Print receipt" icon={Printer} onClick={() => props.onPrint(payment)} />
+                      {payment.isDeleted ? (
+                        <IconButton label="Restore" icon={ArchiveRestore} onClick={() => props.onRestore(payment)} />
+                      ) : (
+                        <IconButton label="Soft delete" icon={Trash2} onClick={() => props.onDelete(payment)} />
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={9} className="px-3 py-10 text-center text-sm text-slate-500">
+                  No payment records found. Add the first payment to start tracking balances.
                 </td>
               </tr>
-            ))}
+            )}
           </tbody>
         </table>
       </div>
@@ -798,7 +867,7 @@ function PayersView({
     <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
       <Panel title="Payer Profiles" icon={UsersRound}>
         <div className="space-y-3">
-          {payers.map((payer) => {
+          {payers.length ? payers.map((payer) => {
             const payerItems = items.filter((item) => item.payerId === payer.id);
             const totalDue = payerItems.reduce((sum, item) => sum + item.totalAmount, 0);
             const paid = payments
@@ -821,7 +890,11 @@ function PayersView({
                 </div>
               </button>
             );
-          })}
+          }) : (
+            <div className="rounded border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+              No payer profiles yet. Profiles are created when you add a payment for a new payer.
+            </div>
+          )}
         </div>
       </Panel>
       <Panel title={selectedPayer ? selectedPayer.fullName : "Profile Details"} icon={BriefcaseBusiness}>
@@ -870,7 +943,7 @@ function AddPaymentView({
     <Panel title="Add Payment" icon={Plus}>
       {savedFlash && (
         <div className="mb-4 rounded border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
-          Payment saved and audit entry created.
+          Payment saved. WhatsApp and Gmail compose windows were opened when contact details were available.
         </div>
       )}
       <form
@@ -942,6 +1015,14 @@ function AddPaymentView({
             {money.format(balance)}
           </p>
         </div>
+        <div className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-600">
+          <div className="flex items-center gap-2 font-semibold text-slate-800">
+            <MessageCircle className="h-4 w-4" />
+            <Mail className="h-4 w-4" />
+            Auto message
+          </div>
+          <p className="mt-2">Saving opens WhatsApp and Gmail with a ready payment confirmation for the payer.</p>
+        </div>
         <div className="flex items-end justify-end">
           <button
             className="inline-flex items-center gap-2 rounded px-5 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2"
@@ -966,7 +1047,7 @@ function ReportsView({
 }: {
   activeBrand: (typeof businesses)[BusinessId];
   scopedPayments: EnrichedPayment[];
-  trend: { month: string; income: number }[];
+  trend: TrendPoint[];
   followUpLedger: FollowUpLedger;
   onExport: () => void;
   onExportFollowUps: () => void;
@@ -1274,21 +1355,27 @@ function Panel({
   );
 }
 
-function CompactPayments({ payments, onPrint }: { payments: EnrichedPayment[]; onPrint: (payment: EnrichedPayment) => void }) {
+function CompactPayments({ payments, onPrint }: { payments: EnrichedPayment[]; onPrint: (payment: EnrichedPayment) => void | Promise<void> }) {
   return (
     <div className="space-y-3">
-      {payments.map((payment) => (
-        <div key={payment.id} className="flex items-center justify-between gap-3 rounded border border-slate-200 p-3">
-          <div className="min-w-0">
-            <p className="truncate font-medium text-slate-950">{payment.payerName}</p>
-            <p className="truncate text-sm text-slate-500">{payment.itemTitle}</p>
+      {payments.length ? (
+        payments.map((payment) => (
+          <div key={payment.id} className="flex items-center justify-between gap-3 rounded border border-slate-200 p-3">
+            <div className="min-w-0">
+              <p className="truncate font-medium text-slate-950">{payment.payerName}</p>
+              <p className="truncate text-sm text-slate-500">{payment.itemTitle}</p>
+            </div>
+            <div className="text-right">
+              <p className="font-semibold tabular">{money.format(payment.amount)}</p>
+              <button className="text-xs font-semibold text-slate-500 hover:text-slate-950" onClick={() => onPrint(payment)}>Receipt</button>
+            </div>
           </div>
-          <div className="text-right">
-            <p className="font-semibold tabular">{money.format(payment.amount)}</p>
-            <button className="text-xs font-semibold text-slate-500 hover:text-slate-950" onClick={() => onPrint(payment)}>Receipt</button>
-          </div>
+        ))
+      ) : (
+        <div className="rounded border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+          No payments recorded yet.
         </div>
-      ))}
+      )}
     </div>
   );
 }
@@ -1334,13 +1421,16 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function buildTrend(payments: EnrichedPayment[]) {
-  const months = ["Feb", "Mar", "Apr", "May", "Jun", "Jul"];
-  return months.map((month, index) => {
-    const monthNumber = index + 2;
+  const current = new Date(`${today}T00:00:00`);
+  return Array.from({ length: 6 }, (_, index) => {
+    const date = new Date(current.getFullYear(), current.getMonth() - 5 + index, 1);
+    const month = date.toLocaleString("en-KE", { month: "short" });
+    const year = date.getFullYear();
+    const monthNumber = date.getMonth() + 1;
     const income = payments
       .filter((payment) => {
-        const date = new Date(payment.date);
-        return date.getFullYear() === 2026 && date.getMonth() + 1 === monthNumber;
+        const paymentDate = new Date(payment.date);
+        return paymentDate.getFullYear() === year && paymentDate.getMonth() + 1 === monthNumber;
       })
       .reduce((sum, payment) => sum + payment.amount, 0);
     return { month, income };

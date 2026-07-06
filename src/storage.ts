@@ -1,14 +1,13 @@
-import { initialAuditLog, initialItems, initialPayers, initialPayments } from "./data";
 import type { AppData, StorageBackend } from "./types";
 
 const STORAGE_KEY = "sam-creative-paytrack-state-v1";
 const SNAPSHOT_ID = "primary";
 
 export const defaultAppData: AppData = {
-  payers: initialPayers,
-  items: initialItems,
-  payments: initialPayments,
-  auditLog: initialAuditLog,
+  payers: [],
+  items: [],
+  payments: [],
+  auditLog: [],
 };
 
 type PersistResult = {
@@ -37,10 +36,10 @@ function headers() {
 
 function normalizeData(data: Partial<AppData> | null | undefined): AppData {
   return {
-    payers: data?.payers?.length ? data.payers : defaultAppData.payers,
-    items: data?.items?.length ? data.items : defaultAppData.items,
-    payments: data?.payments?.length ? data.payments : defaultAppData.payments,
-    auditLog: data?.auditLog?.length ? data.auditLog : defaultAppData.auditLog,
+    payers: Array.isArray(data?.payers) ? data.payers : defaultAppData.payers,
+    items: Array.isArray(data?.items) ? data.items : defaultAppData.items,
+    payments: Array.isArray(data?.payments) ? data.payments : defaultAppData.payments,
+    auditLog: Array.isArray(data?.auditLog) ? data.auditLog : defaultAppData.auditLog,
   };
 }
 
