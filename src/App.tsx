@@ -514,6 +514,22 @@ function App() {
     ]);
   }
 
+  function updatePayer(payerId: string, updates: Pick<Payer, "fullName" | "phone" | "email" | "type">) {
+    setPayers((current) =>
+      current.map((payer) =>
+        payer.id === payerId
+          ? {
+              ...payer,
+              fullName: updates.fullName.trim(),
+              phone: updates.phone.trim(),
+              email: updates.email.trim(),
+              type: updates.type,
+            }
+          : payer,
+      ),
+    );
+  }
+
   function addPayment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
@@ -1111,6 +1127,7 @@ function App() {
                 auditLog={auditLog}
                 onPrint={printReceipt}
                 onShareReceipt={openReceiptShare}
+                onUpdatePayer={updatePayer}
                 onCloseBalance={closeItemBalance}
               />
             )}
@@ -1244,12 +1261,12 @@ function HomeActionCard({
 }) {
   return (
     <button
-      className="money-glow-card group rounded border border-slate-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-slate-300"
+      className="home-action-card money-glow-card group rounded border border-slate-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-slate-300"
       onClick={onClick}
       style={{ "--glow-color": color, borderTopColor: color, borderTopWidth: 3 } as React.CSSProperties}
     >
       <div className="flex items-start justify-between gap-4">
-        <span className="inline-flex h-11 w-11 items-center justify-center rounded border border-slate-200 bg-slate-50" style={{ color }}>
+        <span className="home-action-icon inline-flex h-11 w-11 items-center justify-center rounded border border-slate-200 bg-slate-50" style={{ color }}>
           <Icon className="h-5 w-5" />
         </span>
         <ArrowRight className="h-5 w-5 text-slate-300 transition group-hover:translate-x-1 group-hover:text-slate-500" />
@@ -1419,7 +1436,7 @@ function MoneyDashboardGraphic({
 
   return (
     <section
-      className="money-dashboard-graphic overflow-hidden rounded border border-slate-200 p-5 text-white shadow-soft md:p-6"
+      className="home-hero-motion money-dashboard-graphic overflow-hidden rounded border border-slate-200 p-5 text-white shadow-soft md:p-6"
       style={{ "--brand-primary": activeBrand.primary, "--brand-accent": activeBrand.accent } as React.CSSProperties}
     >
       <div className="relative z-10 grid gap-5 lg:grid-cols-[1.15fr_0.85fr] lg:items-center">
@@ -1701,6 +1718,7 @@ function PayersView({
   auditLog,
   onPrint,
   onShareReceipt,
+  onUpdatePayer,
   onCloseBalance,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
@@ -1712,6 +1730,7 @@ function PayersView({
   auditLog: AuditEntry[];
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
   onShareReceipt: (payment: EnrichedPayment) => void;
+  onUpdatePayer: (payerId: string, updates: Pick<Payer, "fullName" | "phone" | "email" | "type">) => void;
   onCloseBalance: (itemId: string, reason?: string) => void;
 }) {
   const { formatMoney } = useMoneyPrivacy();
@@ -1753,7 +1772,7 @@ function PayersView({
       </Panel>
       <Panel title={selectedPayer ? selectedPayer.fullName : "Profile Details"} icon={BriefcaseBusiness}>
         {selectedPayer ? (
-          <ProfileDetails payer={selectedPayer} items={items} payments={payments} auditLog={auditLog} activeBrand={activeBrand} onPrint={onPrint} onShareReceipt={onShareReceipt} onCloseBalance={onCloseBalance} />
+          <ProfileDetails payer={selectedPayer} items={items} payments={payments} auditLog={auditLog} activeBrand={activeBrand} onPrint={onPrint} onShareReceipt={onShareReceipt} onUpdatePayer={onUpdatePayer} onCloseBalance={onCloseBalance} />
         ) : (
           <p className="text-sm text-slate-500">Select a payer to inspect balances, history, and audit entries.</p>
         )}
@@ -2070,6 +2089,7 @@ function ProfileDetails({
   activeBrand,
   onPrint,
   onShareReceipt,
+  onUpdatePayer,
   onCloseBalance,
 }: {
   payer: Payer;
@@ -2079,9 +2099,17 @@ function ProfileDetails({
   activeBrand: (typeof businesses)[BusinessId];
   onPrint: (payment: EnrichedPayment) => void | Promise<void>;
   onShareReceipt: (payment: EnrichedPayment) => void;
+  onUpdatePayer: (payerId: string, updates: Pick<Payer, "fullName" | "phone" | "email" | "type">) => void;
   onCloseBalance: (itemId: string, reason?: string) => void;
 }) {
   const { formatMoney } = useMoneyPrivacy();
+  const [isEditingContact, setIsEditingContact] = useState(false);
+  const [contactForm, setContactForm] = useState({
+    fullName: payer.fullName,
+    phone: payer.phone,
+    email: payer.email,
+    type: payer.type,
+  });
   const payerItems = items.filter((item) => item.payerId === payer.id && isCollectibleItem(item, payments));
   const payerPayments = payments.filter((payment) => payment.payerId === payer.id && !payment.isDeleted);
   const payerItemIds = new Set(payerItems.map((item) => item.id));
@@ -2097,8 +2125,97 @@ function ProfileDetails({
     })
     .filter((entry) => entry.balance > 0);
 
+  useEffect(() => {
+    setContactForm({
+      fullName: payer.fullName,
+      phone: payer.phone,
+      email: payer.email,
+      type: payer.type,
+    });
+    setIsEditingContact(false);
+  }, [payer.id, payer.fullName, payer.phone, payer.email, payer.type]);
+
+  const updateContactForm = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    setContactForm((current) => ({ ...current, [event.target.name]: event.target.value }));
+  };
+
+  const saveContact = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const fullName = contactForm.fullName.trim();
+    if (!fullName) return;
+    onUpdatePayer(payer.id, {
+      fullName,
+      phone: contactForm.phone,
+      email: contactForm.email,
+      type: contactForm.type,
+    });
+    setIsEditingContact(false);
+  };
+
   return (
     <div className="space-y-5">
+      <div className="rounded border border-slate-200 bg-white p-4">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-500">Contact details</p>
+            <p className="mt-1 text-lg font-semibold text-slate-950">{payer.fullName}</p>
+            <p className="mt-1 text-sm text-slate-500">
+              {payer.phone || "No phone saved"} · {payer.email || "No email saved"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsEditingContact((current) => !current)}
+            className="inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 focus:outline-none focus:ring-2 focus:ring-slate-300"
+          >
+            <Pencil className="h-4 w-4" />
+            {isEditingContact ? "Close" : "Edit contact"}
+          </button>
+        </div>
+        {isEditingContact && (
+          <form onSubmit={saveContact} className="grid gap-3 md:grid-cols-2">
+            <Field label="Name">
+              <input name="fullName" value={contactForm.fullName} onChange={updateContactForm} className="input" required />
+            </Field>
+            <Field label="Phone">
+              <input name="phone" value={contactForm.phone} onChange={updateContactForm} className="input" placeholder="+254 ..." />
+            </Field>
+            <Field label="Email">
+              <input name="email" value={contactForm.email} onChange={updateContactForm} type="email" className="input" placeholder="name@example.com" />
+            </Field>
+            <Field label="Payer type">
+              <select name="type" value={contactForm.type} onChange={updateContactForm} className="input">
+                <option value="student">Student</option>
+                <option value="client">Client</option>
+              </select>
+            </Field>
+            <div className="flex justify-end gap-2 md:col-span-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setContactForm({
+                    fullName: payer.fullName,
+                    phone: payer.phone,
+                    email: payer.email,
+                    type: payer.type,
+                  });
+                  setIsEditingContact(false);
+                }}
+                className="inline-flex items-center rounded border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
+              >
+                Cancel
+              </button>
+              <button
+                className="money-glow-button inline-flex items-center gap-2 rounded px-4 py-2 text-sm font-semibold text-white"
+                style={{ backgroundColor: activeBrand.accent }}
+              >
+                <Save className="h-4 w-4" />
+                Save contact
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
       <div className="grid gap-3 sm:grid-cols-3">
         <MetricMini label="Total Due" value={formatMoney(totalDue)} />
         <MetricMini label="Paid" value={formatMoney(paid)} />
