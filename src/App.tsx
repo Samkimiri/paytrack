@@ -259,6 +259,7 @@ const nav = [
   { id: "payers", label: "Clients/Students", icon: UsersRound },
   { id: "add", label: "Add Payment", icon: Plus },
   { id: "reports", label: "Reports", icon: FileText },
+  { id: "trash", label: "Trash", icon: ArchiveRestore },
   { id: "settings", label: "Settings", icon: Settings },
 ] as const;
 
@@ -377,7 +378,10 @@ function App() {
   }, [totalsVisible]);
 
   const activeBrand = scope === "graphics" ? businesses.graphics : businesses.scds;
-  const visibleBusinessIds = scope === "combined" ? (["scds", "graphics"] as BusinessId[]) : [scope];
+  const visibleBusinessIds = useMemo<BusinessId[]>(
+    () => (scope === "combined" ? ["scds", "graphics"] : [scope]),
+    [scope],
+  );
 
   const enrichedPayments = useMemo(
     () =>
@@ -1153,6 +1157,13 @@ function App() {
                 onExportMonthlyPdf={exportMonthlyPdf}
               />
             )}
+            {view === "trash" && (
+              <TrashView
+                activeBrand={activeBrand}
+                payments={trashPayments}
+                onRestore={restorePayment}
+              />
+            )}
             {view === "settings" && (
               <SettingsView
                 activeBrand={activeBrand}
@@ -1799,32 +1810,50 @@ function AddPaymentView({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const defaultBusiness = scope === "graphics" ? "graphics" : "scds";
-  const buildInitialForm = (): FormState => ({
-    businessId: editContext?.payment.businessId ?? defaultBusiness,
-    payerId: editContext?.payment.payerId ?? "",
-    newPayerName: "",
-    newPayerPhone: "",
-    newPayerEmail: "",
-    itemTitle: editContext?.item.title ?? "",
-    totalDue: editContext ? String(editContext.item.totalAmount) : "",
-    installmentCount: editContext ? String(editContext.item.installmentCount ?? 1) : "1",
-    installmentFrequency: editContext?.item.installmentFrequency ?? "once",
-    amount: editContext ? String(editContext.payment.amount) : "",
-    method: editContext?.payment.method ?? "M-Pesa",
-    mpesaCode: editContext?.payment.mpesaCode ?? "",
-    date: editContext?.payment.date ?? today,
-    dueDate: editContext?.item.dueDate ?? today,
-    notes: editContext?.payment.notes ?? "",
-  });
-  const [form, setForm] = useState<FormState>(buildInitialForm);
-  const { formatMoney } = useMoneyPrivacy();
   const isEditing = Boolean(editContext);
+  const initialForm = useMemo<FormState>(
+    () => ({
+      businessId: editContext?.payment.businessId ?? defaultBusiness,
+      payerId: editContext?.payment.payerId ?? "",
+      newPayerName: "",
+      newPayerPhone: "",
+      newPayerEmail: "",
+      itemTitle: editContext?.item.title ?? "",
+      totalDue: isEditing ? String(editContext?.item.totalAmount) : "",
+      installmentCount: isEditing ? String(editContext?.item.installmentCount ?? 1) : "1",
+      installmentFrequency: editContext?.item.installmentFrequency ?? "once",
+      amount: isEditing ? String(editContext?.payment.amount) : "",
+      method: editContext?.payment.method ?? "M-Pesa",
+      mpesaCode: editContext?.payment.mpesaCode ?? "",
+      date: editContext?.payment.date ?? today,
+      dueDate: editContext?.item.dueDate ?? today,
+      notes: editContext?.payment.notes ?? "",
+    }),
+    [
+      defaultBusiness,
+      editContext?.item.dueDate,
+      editContext?.item.installmentCount,
+      editContext?.item.installmentFrequency,
+      editContext?.item.title,
+      editContext?.item.totalAmount,
+      editContext?.payment.amount,
+      editContext?.payment.businessId,
+      editContext?.payment.date,
+      editContext?.payment.method,
+      editContext?.payment.mpesaCode,
+      editContext?.payment.notes,
+      editContext?.payment.payerId,
+      isEditing,
+    ],
+  );
+  const [form, setForm] = useState<FormState>(initialForm);
+  const { formatMoney } = useMoneyPrivacy();
   const balance = Math.max(Number(form.totalDue || 0) - Number(form.amount || 0) - (editContext?.otherPaidForItem ?? 0), 0);
   const businessPayers = payers.filter((payer) => payer.businessId === form.businessId);
 
   useEffect(() => {
-    setForm(buildInitialForm());
-  }, [editContext?.payment.id, scope]);
+    setForm(initialForm);
+  }, [initialForm]);
 
   const updateForm = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     setForm((current) => ({ ...current, [event.target.name]: event.target.value }));
@@ -1841,7 +1870,7 @@ function AddPaymentView({
         onSubmit={(event) => {
           onSubmit(event);
           if (!isEditing) {
-            setForm(buildInitialForm());
+            setForm(initialForm);
           }
         }}
         className="grid gap-4 lg:grid-cols-2"
@@ -2104,12 +2133,16 @@ function ProfileDetails({
 }) {
   const { formatMoney } = useMoneyPrivacy();
   const [isEditingContact, setIsEditingContact] = useState(false);
-  const [contactForm, setContactForm] = useState({
-    fullName: payer.fullName,
-    phone: payer.phone,
-    email: payer.email,
-    type: payer.type,
-  });
+  const initialContactForm = useMemo(
+    () => ({
+      fullName: payer.fullName,
+      phone: payer.phone,
+      email: payer.email,
+      type: payer.type,
+    }),
+    [payer.email, payer.fullName, payer.phone, payer.type],
+  );
+  const [contactForm, setContactForm] = useState(initialContactForm);
   const payerItems = items.filter((item) => item.payerId === payer.id && isCollectibleItem(item, payments));
   const payerPayments = payments.filter((payment) => payment.payerId === payer.id && !payment.isDeleted);
   const payerItemIds = new Set(payerItems.map((item) => item.id));
@@ -2126,14 +2159,9 @@ function ProfileDetails({
     .filter((entry) => entry.balance > 0);
 
   useEffect(() => {
-    setContactForm({
-      fullName: payer.fullName,
-      phone: payer.phone,
-      email: payer.email,
-      type: payer.type,
-    });
+    setContactForm(initialContactForm);
     setIsEditingContact(false);
-  }, [payer.id, payer.fullName, payer.phone, payer.email, payer.type]);
+  }, [initialContactForm, payer.id]);
 
   const updateContactForm = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setContactForm((current) => ({ ...current, [event.target.name]: event.target.value }));
@@ -2193,12 +2221,7 @@ function ProfileDetails({
               <button
                 type="button"
                 onClick={() => {
-                  setContactForm({
-                    fullName: payer.fullName,
-                    phone: payer.phone,
-                    email: payer.email,
-                    type: payer.type,
-                  });
+                  setContactForm(initialContactForm);
                   setIsEditingContact(false);
                 }}
                 className="inline-flex items-center rounded border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"

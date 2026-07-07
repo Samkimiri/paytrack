@@ -1,11 +1,11 @@
-const CACHE_NAME = "paytrack-v1";
-const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/logo.svg", "/maskable-icon.svg"];
+const CACHE_NAME = "paytrack-v2";
+const PRECACHE_ASSETS = ["/manifest.webmanifest", "/logo.svg", "/maskable-icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE_NAME)
-      .then((cache) => cache.addAll(APP_SHELL))
+      .then((cache) => cache.addAll(PRECACHE_ASSETS))
       .then(() => self.skipWaiting()),
   );
 });
@@ -23,15 +23,20 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 
   const request = event.request;
-  const isNavigation = request.mode === "navigate";
+
+  if (request.mode === "navigate") {
+    event.respondWith(fetch(request));
+    return;
+  }
 
   event.respondWith(
     fetch(request)
       .then((response) => {
+        if (!response.ok || request.url.startsWith("chrome-extension://")) return response;
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
         return response;
       })
-      .catch(() => caches.match(request).then((cached) => cached || (isNavigation ? caches.match("/") : undefined))),
+      .catch(() => caches.match(request)),
   );
 });
