@@ -26,6 +26,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Smartphone,
   Trash2,
   UsersRound,
   X,
@@ -141,6 +142,39 @@ function normalizeWhatsAppPhone(phone: string) {
   return digits;
 }
 
+function normalizeSmsPhone(phone: string) {
+  const digits = phone.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("254")) return `+${digits}`;
+  if (digits.startsWith("0")) return `+254${digits.slice(1)}`;
+  return phone.trim().startsWith("+") ? phone.trim() : `+${digits}`;
+}
+
+function canMessagePhone(phone: string) {
+  return Boolean(normalizeWhatsAppPhone(phone) || normalizeSmsPhone(phone));
+}
+
+function openContactMessage(phone: string, message: string) {
+  const whatsappPhone = normalizeWhatsAppPhone(phone);
+
+  if (whatsappPhone) {
+    window.open(`https://wa.me/${whatsappPhone}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+    return;
+  }
+
+  const smsPhone = normalizeSmsPhone(phone);
+  if (smsPhone) {
+    window.open(`sms:${smsPhone}?&body=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+  }
+}
+
+function openSmsMessage(phone: string, message: string) {
+  const smsPhone = normalizeSmsPhone(phone);
+  if (smsPhone) {
+    window.open(`sms:${smsPhone}?&body=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+  }
+}
+
 function buildPaymentMessage({ payer, item, payment }: PaymentNotificationDetails) {
   const business = businesses[payment.businessId];
   const balance = Math.max(item.totalAmount - payment.amount, 0);
@@ -167,12 +201,7 @@ function buildPaymentMessage({ payer, item, payment }: PaymentNotificationDetail
 }
 
 function openPaymentNotifications(details: PaymentNotificationDetails) {
-  const message = buildPaymentMessage(details);
-  const whatsappPhone = normalizeWhatsAppPhone(details.payer.phone);
-
-  if (whatsappPhone) {
-    window.open(`https://wa.me/${whatsappPhone}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
-  }
+  openContactMessage(details.payer.phone, buildPaymentMessage(details));
 }
 
 function buildReceiptShareMessage(payment: EnrichedPayment) {
@@ -199,9 +228,11 @@ function buildReceiptShareMessage(payment: EnrichedPayment) {
 }
 
 function openReceiptShare(payment: EnrichedPayment) {
-  const whatsappPhone = normalizeWhatsAppPhone(payment.payerPhone);
-  if (!whatsappPhone) return;
-  window.open(`https://wa.me/${whatsappPhone}?text=${encodeURIComponent(buildReceiptShareMessage(payment))}`, "_blank", "noopener,noreferrer");
+  openContactMessage(payment.payerPhone, buildReceiptShareMessage(payment));
+}
+
+function openReceiptSms(payment: EnrichedPayment) {
+  openSmsMessage(payment.payerPhone, buildReceiptShareMessage(payment));
 }
 
 function buildBalanceReminderMessage(item: FollowUpItem) {
@@ -226,9 +257,11 @@ function buildBalanceReminderMessage(item: FollowUpItem) {
 }
 
 function openWhatsAppReminder(item: FollowUpItem) {
-  const whatsappPhone = normalizeWhatsAppPhone(item.phone);
-  if (!whatsappPhone) return;
-  window.open(`https://wa.me/${whatsappPhone}?text=${encodeURIComponent(buildBalanceReminderMessage(item))}`, "_blank", "noopener,noreferrer");
+  openContactMessage(item.phone, buildBalanceReminderMessage(item));
+}
+
+function openSmsReminder(item: FollowUpItem) {
+  openSmsMessage(item.phone, buildBalanceReminderMessage(item));
 }
 
 function reminderFromPayment(payment: EnrichedPayment): FollowUpItem {
@@ -1608,8 +1641,9 @@ function PaymentsView(props: {
           <tbody>
             {visiblePayments.length ? (
               visiblePayments.map((payment) => {
-                const canRemindBalance = payment.balance > 0 && Boolean(normalizeWhatsAppPhone(payment.payerPhone));
-                const canShareReceipt = Boolean(normalizeWhatsAppPhone(payment.payerPhone));
+                const canRemindBalance = payment.balance > 0 && canMessagePhone(payment.payerPhone);
+                const canShareReceipt = canMessagePhone(payment.payerPhone);
+                const canSendSms = Boolean(normalizeSmsPhone(payment.payerPhone));
 
                 return (
                   <tr key={payment.id} className="border-b border-slate-100 bg-white">
@@ -1636,13 +1670,27 @@ function PaymentsView(props: {
                             glow
                           />
                         )}
+                        {canRemindBalance && canSendSms && (
+                          <IconButton
+                            label="Send balance SMS"
+                            icon={Smartphone}
+                            onClick={() => openSmsReminder(reminderFromPayment(payment))}
+                          />
+                        )}
                         <IconButton label="Edit payment" icon={Pencil} onClick={() => props.onEdit(payment)} glow={!canRemindBalance} />
                         <IconButton label="Print receipt" icon={Printer} onClick={() => props.onPrint(payment)} />
                         {canShareReceipt && (
                           <IconButton
-                            label="Share receipt on WhatsApp"
+                            label="Share receipt message"
                             icon={MessageCircle}
                             onClick={() => props.onShareReceipt(payment)}
+                          />
+                        )}
+                        {canSendSms && (
+                          <IconButton
+                            label="Send receipt SMS"
+                            icon={Smartphone}
+                            onClick={() => openReceiptSms(payment)}
                           />
                         )}
                         <IconButton label="Move to trash" icon={Trash2} onClick={() => props.onDelete(payment)} />
@@ -1776,10 +1824,15 @@ function PayersView({
                   <p className="font-semibold text-slate-950">{payer.fullName}</p>
                   <span className="rounded bg-slate-100 px-2 py-1 text-xs font-medium capitalize text-slate-600">{payer.type}</span>
                 </div>
-                <p className="mt-2 text-sm text-slate-500">{payer.email || "No email saved"}</p>
+                <p className="mt-2 text-sm text-slate-500">{payer.phone || "No phone saved"}</p>
+                <p className="mt-1 text-xs text-slate-400">{payer.email || "No email saved"}</p>
                 <div className="mt-3 flex justify-between text-sm tabular">
                   <span>{formatMoney(paid)} paid</span>
                   <span style={{ color: activeBrand.alert }}>{formatMoney(Math.max(totalDue - paid, 0))} due</span>
+                </div>
+                <div className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-slate-500">
+                  <Pencil className="h-3.5 w-3.5" />
+                  Open / edit contact
                 </div>
               </button>
             );
@@ -1872,7 +1925,7 @@ function AddPaymentView({
     <Panel title={isEditing ? "Edit Payment" : "Add Payment"} icon={isEditing ? Pencil : Plus}>
       {savedFlash && (
         <div className="mb-4 rounded border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
-          Payment saved. WhatsApp was opened when a phone number was available.
+          Payment saved. WhatsApp or SMS was opened when a phone number was available.
         </div>
       )}
       <form
@@ -1959,9 +2012,9 @@ function AddPaymentView({
           <div className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-600">
             <div className="flex items-center gap-2 font-semibold text-slate-800">
               <MessageCircle className="h-4 w-4" />
-              WhatsApp message
+              Customer message
             </div>
-            <p className="mt-2">Saving opens WhatsApp when a phone number is available.</p>
+            <p className="mt-2">Saving opens WhatsApp first, with SMS as the fallback when needed.</p>
           </div>
         ) : (
           <div className="rounded border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
@@ -2284,7 +2337,8 @@ function ProfileDetails({
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="font-semibold tabular" style={{ color: activeBrand.alert }}>{formatMoney(balance)}</span>
-                    <IconButton label="Send WhatsApp reminder" icon={MessageCircle} onClick={() => openWhatsAppReminder(reminder)} glow />
+                    <IconButton label="Send reminder message" icon={MessageCircle} onClick={() => openWhatsAppReminder(reminder)} glow />
+                    <IconButton label="Send reminder SMS" icon={Smartphone} onClick={() => openSmsReminder(reminder)} />
                     <IconButton label="Close balance" icon={ArchiveRestore} onClick={() => onCloseBalance(item.id, "Closed from client profile")} />
                   </div>
                 </div>
@@ -2329,8 +2383,11 @@ function ProfileDetails({
                   <td>
                     <div className="flex gap-1">
                       <IconButton label="Download receipt" icon={Download} onClick={() => onPrint(enrichedPayment)} glow />
-                      {normalizeWhatsAppPhone(enrichedPayment.payerPhone) && (
-                        <IconButton label="Share receipt on WhatsApp" icon={MessageCircle} onClick={() => onShareReceipt(enrichedPayment)} />
+                      {canMessagePhone(enrichedPayment.payerPhone) && (
+                        <IconButton label="Share receipt message" icon={MessageCircle} onClick={() => onShareReceipt(enrichedPayment)} />
+                      )}
+                      {normalizeSmsPhone(enrichedPayment.payerPhone) && (
+                        <IconButton label="Send receipt SMS" icon={Smartphone} onClick={() => openReceiptSms(enrichedPayment)} />
                       )}
                     </div>
                   </td>
@@ -2421,10 +2478,18 @@ function FollowUpRow({
           <button
             className="mt-2 inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
             onClick={() => openWhatsAppReminder(item)}
-            disabled={!normalizeWhatsAppPhone(item.phone)}
+            disabled={!canMessagePhone(item.phone)}
           >
             <MessageCircle className="h-3.5 w-3.5" />
-            WhatsApp
+            Message
+          </button>
+          <button
+            className="mt-2 ml-2 inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => openSmsReminder(item)}
+            disabled={!normalizeSmsPhone(item.phone)}
+          >
+            <Smartphone className="h-3.5 w-3.5" />
+            SMS
           </button>
           {onCloseBalance && (
             <button
@@ -2462,7 +2527,7 @@ function OverdueView({
         <div className="grid gap-4 md:grid-cols-3">
           <MetricMini label="Overdue Total" value={formatMoney(ledger.overdueTotal)} color={activeBrand.alert} />
           <MetricMini label="Overdue Clients" value={String(overdueItems.length)} color={activeBrand.alert} />
-          <MetricMini label="WhatsApp Ready" value={String(overdueItems.filter((item) => normalizeWhatsAppPhone(item.phone)).length)} color={activeBrand.accent} />
+          <MetricMini label="Message Ready" value={String(overdueItems.filter((item) => canMessagePhone(item.phone)).length)} color={activeBrand.accent} />
         </div>
         <div className="mt-5 space-y-2">
           {overdueItems.length ? (
@@ -2616,8 +2681,11 @@ function CompactPayments({
               <p className="font-semibold tabular">{formatMoney(payment.amount)}</p>
               <div className="mt-1 flex justify-end gap-2 text-xs font-semibold">
                 <button className="text-slate-500 hover:text-slate-950" onClick={() => onPrint(payment)}>Receipt</button>
-                {normalizeWhatsAppPhone(payment.payerPhone) && (
-                  <button className="text-slate-500 hover:text-slate-950" onClick={() => onShareReceipt(payment)}>WhatsApp</button>
+                {canMessagePhone(payment.payerPhone) && (
+                  <button className="text-slate-500 hover:text-slate-950" onClick={() => onShareReceipt(payment)}>Message</button>
+                )}
+                {normalizeSmsPhone(payment.payerPhone) && (
+                  <button className="text-slate-500 hover:text-slate-950" onClick={() => openReceiptSms(payment)}>SMS</button>
                 )}
               </div>
             </div>
