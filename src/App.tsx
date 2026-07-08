@@ -434,6 +434,11 @@ function App() {
   const scopedPayers = payers.filter((payer) => visibleBusinessIds.includes(payer.businessId));
   const activePayments = scopedPayments;
   const totalCollected = activePayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const weeklyEarnings = enrichedPayments
+    .filter((payment) => visibleBusinessIds.includes(payment.businessId))
+    .filter((payment) => !payment.isDeleted)
+    .filter((payment) => isPaymentInDateRange(payment.date, "week", "", ""))
+    .reduce((sum, payment) => sum + payment.amount, 0);
   const outstanding = items
     .filter((item) => visibleBusinessIds.includes(item.businessId))
     .filter((item) => isCollectibleItem(item, payments))
@@ -1059,6 +1064,7 @@ function App() {
                 activeBrand={activeBrand}
                 scope={scope}
                 totalCollected={totalCollected}
+                weeklyEarnings={weeklyEarnings}
                 outstanding={outstanding}
                 transactions={activePayments.length}
                 activePayers={scopedPayers.length}
@@ -1186,6 +1192,7 @@ function HomeView({
   activeBrand,
   scope,
   totalCollected,
+  weeklyEarnings,
   outstanding,
   transactions,
   activePayers,
@@ -1195,6 +1202,7 @@ function HomeView({
   activeBrand: (typeof businesses)[BusinessId];
   scope: BusinessScope;
   totalCollected: number;
+  weeklyEarnings: number;
   outstanding: number;
   transactions: number;
   activePayers: number;
@@ -1248,8 +1256,9 @@ function HomeView({
         />
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-3">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Total Collected" value={formatMoney(totalCollected)} icon={Banknote} color={activeBrand.accent} />
+        <MetricCard label="This Week" value={formatMoney(weeklyEarnings)} icon={CalendarDays} color={activeBrand.primary} />
         <MetricCard label="Open Balances" value={formatMoney(outstanding)} icon={Activity} color={activeBrand.alert} />
         <MetricCard label="Audit Confidence" value={`${confidenceScore}%`} icon={ShieldCheck} color={confidenceScore >= 85 ? activeBrand.success : activeBrand.alert} />
       </section>
