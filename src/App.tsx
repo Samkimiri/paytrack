@@ -154,6 +154,13 @@ function canMessagePhone(phone: string) {
   return Boolean(normalizeWhatsAppPhone(phone) || normalizeSmsPhone(phone));
 }
 
+function getPaymentStatusLabel(status: PaymentStatus | "Deleted") {
+  if (status === "Paid") return "Payment received";
+  if (status === "Partial") return "Part payment received";
+  if (status === "Pending") return "Awaiting payment";
+  return "Deleted";
+}
+
 function openContactMessage(phone: string, message: string) {
   const whatsappPhone = normalizeWhatsAppPhone(phone);
 
@@ -187,7 +194,7 @@ function buildPaymentMessage({ payer, item, payment }: PaymentNotificationDetail
     `- Amount received: ${money.format(payment.amount)}`,
     `- Service/project: ${item.title}`,
     `- Payment method: ${payment.method}`,
-    payment.mpesaCode ? `- M-Pesa code: ${payment.mpesaCode}` : null,
+    `- Payment status: ${getPaymentStatusLabel(payment.status)}`,
     `- Payment date: ${payment.date}`,
     `- Remaining balance: ${money.format(balance)}`,
     "",
@@ -216,7 +223,7 @@ function buildReceiptShareMessage(payment: EnrichedPayment) {
     `- Amount received: ${money.format(payment.amount)}`,
     `- Service/project: ${payment.itemTitle}`,
     `- Payment method: ${payment.method}`,
-    payment.mpesaCode ? `- M-Pesa code: ${payment.mpesaCode}` : null,
+    `- Payment status: ${getPaymentStatusLabel(payment.status)}`,
     `- Payment date: ${payment.date}`,
     `- Remaining balance: ${money.format(payment.balance)}`,
     "",
@@ -662,7 +669,7 @@ function App() {
     const totalDue = Number(state.totalDue);
     const installmentCount = Math.max(Number(state.installmentCount || 1), 1);
     const method = state.method as PaymentMethod;
-    const mpesaCode = method === "M-Pesa" ? state.mpesaCode.trim() : "";
+    const mpesaCode = method === "M-Pesa" ? (state.mpesaCode ?? "").trim() : "";
     const paymentDate = state.date || today;
     const dueDate = state.dueDate || today;
     const status: PaymentStatus = totalDue - otherPaidForItem - amount <= 0 ? "Paid" : amount > 0 ? "Partial" : "Pending";
@@ -821,8 +828,8 @@ function App() {
       ["Item", payment.itemTitle],
       ["Amount", money.format(payment.amount)],
       ["Method", payment.method],
-      ["M-Pesa Code", payment.mpesaCode ?? "N/A"],
-      ["Status", payment.balance === 0 ? "PAID" : "BALANCE DUE"],
+      ["Payment status", getPaymentStatusLabel(payment.status)],
+      ["Balance status", payment.balance === 0 ? "Payment complete" : "Balance due"],
       ["Remaining Balance", money.format(payment.balance)],
     ];
     let y = 70;
@@ -853,7 +860,7 @@ function App() {
       payment.itemTitle,
       payment.amount,
       payment.method,
-      payment.status,
+      getPaymentStatusLabel(payment.status),
       payment.balance,
     ]);
     const csv = [header, ...rows]
@@ -1579,7 +1586,7 @@ function PaymentsView(props: {
           <input
             value={props.query}
             onChange={(event) => props.setQuery(event.target.value)}
-            placeholder="Search payer, phone, item, or M-Pesa code"
+            placeholder="Search payer, phone, item, or payment details"
             className="w-full rounded border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
           />
         </label>
@@ -1599,9 +1606,9 @@ function PaymentsView(props: {
           className="rounded border border-slate-200 bg-white px-3 py-2 text-sm"
         >
           <option value="all">All statuses</option>
-          <option>Paid</option>
-          <option>Partial</option>
-          <option>Pending</option>
+          <option value="Paid">{getPaymentStatusLabel("Paid")}</option>
+          <option value="Partial">{getPaymentStatusLabel("Partial")}</option>
+          <option value="Pending">{getPaymentStatusLabel("Pending")}</option>
         </select>
         <select
           value={props.dateRange}
@@ -1911,6 +1918,11 @@ function AddPaymentView({
   const [form, setForm] = useState<FormState>(initialForm);
   const { formatMoney } = useMoneyPrivacy();
   const balance = Math.max(Number(form.totalDue || 0) - Number(form.amount || 0) - (editContext?.otherPaidForItem ?? 0), 0);
+  const paymentStatusPreview: PaymentStatus = Number(form.totalDue || 0) - (editContext?.otherPaidForItem ?? 0) - Number(form.amount || 0) <= 0 && Number(form.totalDue || 0) > 0
+    ? "Paid"
+    : Number(form.amount || 0) > 0
+      ? "Partial"
+      : "Pending";
   const businessPayers = payers.filter((payer) => payer.businessId === form.businessId);
 
   useEffect(() => {
@@ -1986,11 +1998,11 @@ function AddPaymentView({
             <option>Bank Transfer</option>
           </select>
         </Field>
-        {form.method === "M-Pesa" && (
-          <Field label="M-Pesa transaction code">
-            <input name="mpesaCode" value={form.mpesaCode} onChange={updateForm} className="input uppercase" placeholder="TH..." />
-          </Field>
-        )}
+        <div className="rounded border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+          <p className="text-xs font-semibold uppercase text-slate-500">Payment status</p>
+          <p className="mt-1 font-semibold text-slate-900">{getPaymentStatusLabel(paymentStatusPreview)}</p>
+          <p className="mt-1 text-xs">This updates automatically from the amount paid and total amount due.</p>
+        </div>
         <Field label="Payment date">
           <input name="date" type="date" value={form.date} onChange={updateForm} className="input tabular" />
         </Field>
@@ -2712,7 +2724,7 @@ function StatusBadge({
   const color = status === "Paid" ? brand.success : status === "Deleted" ? brand.alert : status === "Pending" ? "#667085" : brand.alert;
   return (
     <span className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-semibold" style={{ backgroundColor: `${color}18`, color }}>
-      {status}
+      {getPaymentStatusLabel(status)}
       {edited ? " Edited" : ""}
     </span>
   );
@@ -2875,17 +2887,6 @@ function buildConfidenceLedger(
   const paymentById = new Map(scopedPayments.map((payment) => [payment.id, payment]));
 
   activePayments.forEach((payment) => {
-    if (payment.method === "M-Pesa" && !payment.mpesaCode?.trim()) {
-      issues.push({
-        id: `missing-mpesa-${payment.id}`,
-        title: "Missing M-Pesa code",
-        detail: `${payment.itemTitle} has an M-Pesa payment without a transaction code.`,
-        severity: "critical",
-        paymentId: payment.id,
-        payerName: payment.payerName,
-      });
-    }
-
     if (payment.method === "Cash" && !payment.notes.trim()) {
       issues.push({
         id: `cash-note-${payment.id}`,
