@@ -1,4 +1,4 @@
-import { createContext, FormEvent, Suspense, lazy, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, FormEvent, Suspense, lazy, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -13,15 +13,18 @@ import {
   Download,
   Eye,
   EyeOff,
+  Fingerprint,
   FileText,
   Home,
   LayoutDashboard,
+  Lock,
   Menu,
   MessageCircle,
   Pencil,
   Plus,
   Printer,
   ReceiptText,
+  RotateCcw,
   Save,
   Search,
   Settings,
@@ -66,12 +69,84 @@ type MoneyPrivacyContextValue = {
   totalsVisible: boolean;
   formatMoney: (value: number) => string;
 };
+type LockSettings = {
+  patternHash: string | null;
+  biometricCredentialId: string | null;
+};
 
 const hiddenMoneyText = "KES *****";
+const lockSettingsKey = "sam-creative-paytrack-lock-v1";
+const patternSalt = "paytrack-local-pattern-v1";
+const idleLockMinutes = 10;
+const idleLockMs = idleLockMinutes * 60_000;
+const maxPatternAttempts = 5;
+const patternCooldownMs = 30_000;
 const MoneyPrivacyContext = createContext<MoneyPrivacyContextValue>({
   totalsVisible: true,
   formatMoney: (value) => money.format(value),
 });
+
+const defaultLockSettings: LockSettings = {
+  patternHash: null,
+  biometricCredentialId: null,
+};
+
+function loadLockSettings(): LockSettings {
+  try {
+    const raw = window.localStorage.getItem(lockSettingsKey);
+    const parsed = raw ? JSON.parse(raw) as Partial<LockSettings> : {};
+    return {
+      patternHash: typeof parsed.patternHash === "string" ? parsed.patternHash : null,
+      biometricCredentialId: typeof parsed.biometricCredentialId === "string" ? parsed.biometricCredentialId : null,
+    };
+  } catch {
+    return defaultLockSettings;
+  }
+}
+
+function saveLockSettings(settings: LockSettings) {
+  window.localStorage.setItem(lockSettingsKey, JSON.stringify(settings));
+}
+
+async function hashPattern(pattern: number[]) {
+  const input = new TextEncoder().encode(`${patternSalt}:${pattern.join("-")}`);
+  const digest = await crypto.subtle.digest("SHA-256", input);
+  return arrayBufferToBase64Url(digest);
+}
+
+function arrayBufferToBase64Url(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "");
+}
+
+function base64UrlToArrayBuffer(value: string) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = window.atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+}
+
+function randomChallenge(length = 32) {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+async function canUsePlatformBiometrics() {
+  return Boolean(
+    window.PublicKeyCredential &&
+      typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === "function" &&
+      await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(),
+  );
+}
 
 function useMoneyPrivacy() {
   return useContext(MoneyPrivacyContext);
@@ -403,6 +478,10 @@ function App() {
   const [savedFlash, setSavedFlash] = useState(false);
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
   const [totalsVisible, setTotalsVisible] = useState(false);
+  const [lockReady, setLockReady] = useState(false);
+  const [lockSettings, setLockSettings] = useState<LockSettings>(defaultLockSettings);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
   const moneyPrivacy = useMemo(
     () => ({
       totalsVisible,
@@ -416,6 +495,141 @@ function App() {
     const timeoutId = window.setTimeout(() => setTotalsVisible(false), 120_000);
     return () => window.clearTimeout(timeoutId);
   }, [totalsVisible]);
+
+  useEffect(() => {
+    const settings = loadLockSettings();
+    setLockSettings(settings);
+    setLockReady(true);
+    canUsePlatformBiometrics().then(setBiometricAvailable).catch(() => setBiometricAvailable(false));
+  }, []);
+
+  function updateLockSettings(settings: LockSettings) {
+    saveLockSettings(settings);
+    setLockSettings(settings);
+  }
+
+  async function savePattern(pattern: number[]) {
+    const patternHash = await hashPattern(pattern);
+    updateLockSettings({ ...lockSettings, patternHash });
+    setIsAuthenticated(true);
+  }
+
+  async function verifyPattern(pattern: number[]) {
+    if (!lockSettings.patternHash) return false;
+    const patternHash = await hashPattern(pattern);
+    const matched = patternHash === lockSettings.patternHash;
+    if (matched) {
+      setIsAuthenticated(true);
+    }
+    return matched;
+  }
+
+  async function enrollBiometric() {
+    if (!lockSettings.patternHash) {
+      throw new Error("Create a pattern before turning on biometric unlock.");
+    }
+    const available = await canUsePlatformBiometrics();
+    setBiometricAvailable(available);
+    if (!available) {
+      throw new Error("This browser cannot use this device's biometric lock.");
+    }
+
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge: randomChallenge(),
+        rp: {
+          name: "PayTrack",
+        },
+        user: {
+          id: new TextEncoder().encode("paytrack-admin"),
+          name: "admin@paytrack.local",
+          displayName: "PayTrack Admin",
+        },
+        pubKeyCredParams: [
+          { alg: -7, type: "public-key" },
+          { alg: -257, type: "public-key" },
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: "platform",
+          residentKey: "preferred",
+          userVerification: "required",
+        },
+        timeout: 60_000,
+        attestation: "none",
+      },
+    });
+
+    if (!credential) {
+      throw new Error("Biometric enrollment was cancelled.");
+    }
+
+    updateLockSettings({
+      ...lockSettings,
+      biometricCredentialId: arrayBufferToBase64Url((credential as PublicKeyCredential).rawId),
+    });
+  }
+
+  async function unlockWithBiometric() {
+    if (!lockSettings.biometricCredentialId) return false;
+
+    try {
+      const credential = await navigator.credentials.get({
+        publicKey: {
+          challenge: randomChallenge(),
+          allowCredentials: [
+            {
+              id: base64UrlToArrayBuffer(lockSettings.biometricCredentialId),
+              type: "public-key",
+            },
+          ],
+          userVerification: "required",
+          timeout: 60_000,
+        },
+      });
+
+      const unlocked = Boolean(credential);
+      if (unlocked) {
+        setIsAuthenticated(true);
+      }
+      return unlocked;
+    } catch {
+      return false;
+    }
+  }
+
+  function resetBiometric() {
+    updateLockSettings({ ...lockSettings, biometricCredentialId: null });
+  }
+
+  const lockApp = useCallback(() => {
+    setTotalsVisible(false);
+    setIsAuthenticated(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+
+    let timeoutId = window.setTimeout(lockApp, idleLockMs);
+    const resetIdleTimer = () => {
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(lockApp, idleLockMs);
+    };
+    const lockWhenHidden = () => {
+      if (document.visibilityState === "hidden") {
+        lockApp();
+      }
+    };
+    const activityEvents: Array<keyof WindowEventMap> = ["click", "keydown", "pointermove", "touchstart"];
+
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, resetIdleTimer, { passive: true }));
+    document.addEventListener("visibilitychange", lockWhenHidden);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetIdleTimer));
+      document.removeEventListener("visibilitychange", lockWhenHidden);
+    };
+  }, [isAuthenticated, lockApp]);
 
   const activeBrand = scope === "graphics" ? businesses.graphics : businesses.scds;
   const visibleBusinessIds = useMemo<BusinessId[]>(
@@ -955,6 +1169,28 @@ function App() {
     doc.save(`paytrack-income-report-${scope}-${today}.pdf`);
   }
 
+  if (!lockReady) {
+    return (
+      <div className="money-pattern flex min-h-screen items-center justify-center bg-slate-50 px-4">
+        <div className="rounded border border-slate-200 bg-white p-6 text-sm font-semibold text-slate-700 shadow-soft">Preparing secure access...</div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <LoginGate
+        activeBrand={activeBrand}
+        hasPattern={Boolean(lockSettings.patternHash)}
+        biometricEnabled={Boolean(lockSettings.biometricCredentialId)}
+        biometricAvailable={biometricAvailable}
+        onSavePattern={savePattern}
+        onVerifyPattern={verifyPattern}
+        onBiometricUnlock={unlockWithBiometric}
+      />
+    );
+  }
+
   return (
     <MoneyPrivacyContext.Provider value={moneyPrivacy}>
       <div className="money-pattern min-h-screen transition-colors" style={{ backgroundColor: activeBrand.light }}>
@@ -1075,6 +1311,13 @@ function App() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={lockApp}
+                  className="inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                >
+                  <Lock className="h-4 w-4" />
+                  <span className="hidden sm:inline">Lock</span>
+                </button>
                 <button
                   onClick={() => setTotalsVisible((current) => !current)}
                   className="inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 focus:outline-none focus:ring-2 focus:ring-slate-300"
@@ -1218,6 +1461,13 @@ function App() {
                 storageError={storageError}
                 lastSavedAt={lastSavedAt}
                 roles={roles}
+                hasPattern={Boolean(lockSettings.patternHash)}
+                biometricEnabled={Boolean(lockSettings.biometricCredentialId)}
+                biometricAvailable={biometricAvailable}
+                onSavePattern={savePattern}
+                onEnrollBiometric={enrollBiometric}
+                onResetBiometric={resetBiometric}
+                onLock={lockApp}
               />
             )}
           </div>
@@ -1225,6 +1475,223 @@ function App() {
       </div>
       </div>
     </MoneyPrivacyContext.Provider>
+  );
+}
+
+function PatternPad({
+  pattern,
+  onChange,
+  activeBrand,
+  disabled = false,
+}: {
+  pattern: number[];
+  onChange: (pattern: number[]) => void;
+  activeBrand: (typeof businesses)[BusinessId];
+  disabled?: boolean;
+}) {
+  return (
+    <div>
+      <div className="grid grid-cols-3 gap-3">
+        {Array.from({ length: 9 }, (_, index) => index + 1).map((point) => {
+          const order = pattern.indexOf(point) + 1;
+          const selected = order > 0;
+
+          return (
+            <button
+              key={point}
+              type="button"
+              disabled={disabled || selected}
+              onClick={() => onChange([...pattern, point])}
+              className="flex aspect-square items-center justify-center rounded border text-sm font-bold transition focus:outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-default"
+              style={{
+                backgroundColor: selected ? activeBrand.primary : "#ffffff",
+                borderColor: selected ? activeBrand.primary : "#E2E8F0",
+                color: selected ? "#ffffff" : "#475569",
+              }}
+              aria-label={`Pattern point ${point}`}
+            >
+              {selected ? order : ""}
+            </button>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange([])}
+        className="mt-3 inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
+      >
+        <RotateCcw className="h-3.5 w-3.5" />
+        Clear pattern
+      </button>
+    </div>
+  );
+}
+
+function LoginGate({
+  activeBrand,
+  hasPattern,
+  biometricEnabled,
+  biometricAvailable,
+  onSavePattern,
+  onVerifyPattern,
+  onBiometricUnlock,
+}: {
+  activeBrand: (typeof businesses)[BusinessId];
+  hasPattern: boolean;
+  biometricEnabled: boolean;
+  biometricAvailable: boolean;
+  onSavePattern: (pattern: number[]) => Promise<void>;
+  onVerifyPattern: (pattern: number[]) => Promise<boolean>;
+  onBiometricUnlock: () => Promise<boolean>;
+}) {
+  const [pattern, setPattern] = useState<number[]>([]);
+  const [firstPattern, setFirstPattern] = useState<number[] | null>(null);
+  const [message, setMessage] = useState(hasPattern ? "Draw your pattern to unlock PayTrack." : "Create a pattern with at least 4 points.");
+  const [busy, setBusy] = useState(false);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const cooldownSeconds = lockedUntil ? Math.max(Math.ceil((lockedUntil - now) / 1000), 0) : 0;
+  const isCoolingDown = cooldownSeconds > 0;
+
+  useEffect(() => {
+    if (!lockedUntil) return undefined;
+    const intervalId = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(intervalId);
+  }, [lockedUntil]);
+
+  useEffect(() => {
+    if (lockedUntil && cooldownSeconds <= 0) {
+      setLockedUntil(null);
+      setFailedAttempts(0);
+      setMessage("Try your pattern again.");
+    }
+  }, [cooldownSeconds, lockedUntil]);
+
+  async function submitPattern() {
+    if (isCoolingDown) {
+      setMessage(`Too many tries. Try again in ${cooldownSeconds}s.`);
+      return;
+    }
+
+    if (pattern.length < 4) {
+      setMessage("Use at least 4 points.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      if (!hasPattern) {
+        if (!firstPattern) {
+          setFirstPattern(pattern);
+          setPattern([]);
+          setMessage("Draw the same pattern again to confirm.");
+          return;
+        }
+
+        if (firstPattern.join("-") !== pattern.join("-")) {
+          setFirstPattern(null);
+          setPattern([]);
+          setMessage("Patterns did not match. Start again.");
+          return;
+        }
+
+        await onSavePattern(pattern);
+        return;
+      }
+
+      const unlocked = await onVerifyPattern(pattern);
+      setMessage(unlocked ? "Unlocked." : "Pattern did not match.");
+      if (!unlocked) {
+        const nextAttempts = failedAttempts + 1;
+        setFailedAttempts(nextAttempts);
+        if (nextAttempts >= maxPatternAttempts) {
+          const nextLockedUntil = Date.now() + patternCooldownMs;
+          setLockedUntil(nextLockedUntil);
+          setNow(Date.now());
+          setMessage(`Too many tries. Try again in ${Math.ceil(patternCooldownMs / 1000)}s.`);
+        }
+        setPattern([]);
+      } else {
+        setFailedAttempts(0);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function biometricUnlock() {
+    if (isCoolingDown) {
+      setMessage(`Too many tries. Try again in ${cooldownSeconds}s.`);
+      return;
+    }
+
+    setBusy(true);
+    const unlocked = await onBiometricUnlock();
+    setMessage(unlocked ? "Unlocked." : "Biometric unlock was not completed.");
+    setBusy(false);
+  }
+
+  return (
+    <div className="money-pattern flex min-h-screen items-center justify-center px-4 py-8" style={{ backgroundColor: activeBrand.light }}>
+      <div className="grid w-full max-w-5xl overflow-hidden rounded border border-slate-200 bg-white shadow-soft lg:grid-cols-[1fr_420px]">
+        <div className="money-dashboard-graphic hidden min-h-[520px] p-8 text-white lg:block" style={{ "--brand-primary": activeBrand.primary } as React.CSSProperties}>
+          <img src="/logo.svg" alt="PayTrack logo" className="h-14 w-14 rounded border border-white/15 bg-white" />
+          <div className="relative mt-28 max-w-md">
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-white/60">Secure payment records</p>
+            <h1 className="mt-4 text-4xl font-semibold leading-tight">PayTrack</h1>
+            <p className="mt-4 text-sm leading-6 text-white/70">
+              Pattern access protects this device. Biometric unlock uses the phone or computer security already set up on the device.
+            </p>
+          </div>
+        </div>
+
+        <div className="p-6 sm:p-8">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex h-11 w-11 items-center justify-center rounded text-white" style={{ backgroundColor: activeBrand.primary }}>
+              <ShieldCheck className="h-5 w-5" />
+            </span>
+            <div>
+              <p className="text-xs font-semibold uppercase text-slate-500">{hasPattern ? "Login" : "First setup"}</p>
+              <h2 className="text-xl font-semibold text-slate-950">{hasPattern ? "Unlock PayTrack" : "Create your pattern"}</h2>
+            </div>
+          </div>
+
+          <p className="mt-5 min-h-6 text-sm text-slate-500">{message}</p>
+          <div className="mt-5">
+            <PatternPad pattern={pattern} onChange={setPattern} activeBrand={activeBrand} disabled={busy || isCoolingDown} />
+          </div>
+          <button
+            type="button"
+            onClick={submitPattern}
+            disabled={busy || isCoolingDown}
+            className="money-glow-button mt-5 inline-flex w-full items-center justify-center gap-2 rounded px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
+            style={{ backgroundColor: activeBrand.accent }}
+          >
+            <Lock className="h-4 w-4" />
+            {isCoolingDown ? `Try again in ${cooldownSeconds}s` : hasPattern ? "Unlock with pattern" : firstPattern ? "Confirm pattern" : "Save pattern"}
+          </button>
+
+          {hasPattern && biometricEnabled && (
+            <button
+              type="button"
+              onClick={biometricUnlock}
+              disabled={busy || !biometricAvailable || isCoolingDown}
+              className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:opacity-50"
+            >
+              <Fingerprint className="h-4 w-4" />
+              Use device biometric
+            </button>
+          )}
+
+          {hasPattern && !biometricEnabled && (
+            <p className="mt-4 rounded border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-500">
+              Biometric unlock can be turned on from Settings after you unlock with your pattern.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1553,6 +2020,30 @@ function WalletGlyph() {
   );
 }
 
+function PaymentRecordStat({
+  label,
+  value,
+  icon: Icon,
+  color,
+}: {
+  label: string;
+  value: string;
+  icon: LucideIcon;
+  color: string;
+}) {
+  return (
+    <div className="rounded border border-slate-200 bg-white p-4 shadow-soft">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold uppercase text-slate-500">{label}</p>
+        <span className="inline-flex h-9 w-9 items-center justify-center rounded bg-slate-50" style={{ color }}>
+          <Icon className="h-4 w-4" />
+        </span>
+      </div>
+      <p className="mt-3 truncate text-xl font-semibold tabular text-slate-950">{value}</p>
+    </div>
+  );
+}
+
 function PaymentsView(props: {
   activeBrand: (typeof businesses)[BusinessId];
   query: string;
@@ -1577,144 +2068,190 @@ function PaymentsView(props: {
 }) {
   const visiblePayments = props.payments.filter((payment) => !payment.isDeleted);
   const { formatMoney } = useMoneyPrivacy();
+  const totalReceived = visiblePayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const openBalance = visiblePayments.reduce((sum, payment) => sum + payment.balance, 0);
+  const messageReady = visiblePayments.filter((payment) => canMessagePhone(payment.payerPhone)).length;
+  const issueCount = visiblePayments.reduce((sum, payment) => sum + (props.confidenceLedger.byPaymentId[payment.id]?.length ?? 0), 0);
 
   return (
-    <Panel title="Payment Records" icon={ReceiptText} action={<IconButton label="Export CSV" icon={Download} onClick={props.onExport} glow />}>
-      <div className="mb-4 grid gap-3 xl:grid-cols-[1fr_150px_150px_160px_150px_150px]">
-        <label className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            value={props.query}
-            onChange={(event) => props.setQuery(event.target.value)}
-            placeholder="Search payer, phone, item, or payment details"
-            className="w-full rounded border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
-          />
-        </label>
-        <select
-          value={props.methodFilter}
-          onChange={(event) => props.setMethodFilter(event.target.value as "all" | PaymentMethod)}
-          className="rounded border border-slate-200 bg-white px-3 py-2 text-sm"
+    <Panel
+      title="Payment Records"
+      icon={ReceiptText}
+      action={
+        <button
+          onClick={props.onExport}
+          className="money-glow-button inline-flex items-center gap-2 rounded bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-300"
+          style={{ backgroundColor: props.activeBrand.accent }}
         >
-          <option value="all">All methods</option>
-          <option>M-Pesa</option>
-          <option>Cash</option>
-          <option>Bank Transfer</option>
-        </select>
-        <select
-          value={props.statusFilter}
-          onChange={(event) => props.setStatusFilter(event.target.value as "all" | PaymentStatus)}
-          className="rounded border border-slate-200 bg-white px-3 py-2 text-sm"
-        >
-          <option value="all">All statuses</option>
-          <option value="Paid">{getPaymentStatusLabel("Paid")}</option>
-          <option value="Partial">{getPaymentStatusLabel("Partial")}</option>
-          <option value="Pending">{getPaymentStatusLabel("Pending")}</option>
-        </select>
-        <select
-          value={props.dateRange}
-          onChange={(event) => props.setDateRange(event.target.value as DateRangeFilter)}
-          className="rounded border border-slate-200 bg-white px-3 py-2 text-sm"
-        >
-          <option value="today">Today</option>
-          <option value="week">This week</option>
-          <option value="month">This month</option>
-          <option value="all">All dates</option>
-          <option value="custom">Custom</option>
-        </select>
-        <input
-          type="date"
-          value={props.customFrom}
-          onChange={(event) => props.setCustomFrom(event.target.value)}
-          disabled={props.dateRange !== "custom"}
-          className="rounded border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
-        />
-        <input
-          type="date"
-          value={props.customTo}
-          onChange={(event) => props.setCustomTo(event.target.value)}
-          disabled={props.dateRange !== "custom"}
-          className="rounded border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400"
-        />
+          <Download className="h-4 w-4" />
+          Export
+        </button>
+      }
+    >
+      <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <PaymentRecordStat label="Records" value={String(visiblePayments.length)} icon={ReceiptText} color={props.activeBrand.primary} />
+        <PaymentRecordStat label="Received" value={formatMoney(totalReceived)} icon={Banknote} color={props.activeBrand.success} />
+        <PaymentRecordStat label="Open balance" value={formatMoney(openBalance)} icon={AlertTriangle} color={openBalance > 0 ? props.activeBrand.alert : props.activeBrand.success} />
+        <PaymentRecordStat label="Message ready" value={`${messageReady}/${visiblePayments.length}`} icon={MessageCircle} color={issueCount > 0 ? props.activeBrand.accent : props.activeBrand.success} />
       </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-[980px] w-full border-collapse text-left text-sm">
-          <thead>
-            <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
-              {["Date", "Payer", "Business", "Item", "Amount", "Method", "Status", "Balance", "Actions"].map((head) => (
-                <th key={head} className="px-3 py-3 font-semibold">{head}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visiblePayments.length ? (
-              visiblePayments.map((payment) => {
-                const canRemindBalance = payment.balance > 0 && canMessagePhone(payment.payerPhone);
-                const canShareReceipt = canMessagePhone(payment.payerPhone);
-                const canSendSms = Boolean(normalizeSmsPhone(payment.payerPhone));
 
-                return (
-                  <tr key={payment.id} className="border-b border-slate-100 bg-white">
-                    <td className="px-3 py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
-                    <td className="px-3 py-3">
-                      <p className="font-medium text-slate-950">{payment.payerName}</p>
-                      <PaymentConfidenceBadge issues={props.confidenceLedger.byPaymentId[payment.id] ?? []} />
-                    </td>
-                    <td className="px-3 py-3">{payment.businessName}</td>
-                    <td className="px-3 py-3">{payment.itemTitle}</td>
-                    <td className="px-3 py-3 font-semibold tabular">{formatMoney(payment.amount)}</td>
-                    <td className="px-3 py-3">{payment.method}</td>
-                    <td className="px-3 py-3">
-                      <StatusBadge status={payment.status} brand={props.activeBrand} edited={payment.edited} />
-                    </td>
-                    <td className="px-3 py-3 tabular">{formatMoney(payment.balance)}</td>
-                    <td className="px-3 py-3">
-                      <div className="flex gap-1">
-                        {canRemindBalance && (
-                          <IconButton
-                            label="Send balance reminder"
-                            icon={MessageCircle}
-                            onClick={() => openWhatsAppReminder(reminderFromPayment(payment))}
-                            glow
-                          />
-                        )}
-                        {canRemindBalance && canSendSms && (
-                          <IconButton
-                            label="Send balance SMS"
-                            icon={Smartphone}
-                            onClick={() => openSmsReminder(reminderFromPayment(payment))}
-                          />
-                        )}
-                        <IconButton label="Edit payment" icon={Pencil} onClick={() => props.onEdit(payment)} glow={!canRemindBalance} />
-                        <IconButton label="Print receipt" icon={Printer} onClick={() => props.onPrint(payment)} />
-                        {canShareReceipt && (
-                          <IconButton
-                            label="Share receipt message"
-                            icon={MessageCircle}
-                            onClick={() => props.onShareReceipt(payment)}
-                          />
-                        )}
-                        {canSendSms && (
-                          <IconButton
-                            label="Send receipt SMS"
-                            icon={Smartphone}
-                            onClick={() => openReceiptSms(payment)}
-                          />
-                        )}
-                        <IconButton label="Move to trash" icon={Trash2} onClick={() => props.onDelete(payment)} />
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })
-            ) : (
-              <tr>
-                <td colSpan={9} className="px-3 py-10 text-center text-sm text-slate-500">
-                  No payment records found. Add the first payment to start tracking balances.
-                </td>
+      <div className="mb-5 rounded border border-slate-200 bg-slate-50/80 p-3">
+        <div className="grid gap-3 xl:grid-cols-[minmax(260px,1fr)_150px_190px_150px_150px_150px]">
+          <label className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              value={props.query}
+              onChange={(event) => props.setQuery(event.target.value)}
+              placeholder="Search payer, phone, item, or payment details"
+              className="h-11 w-full rounded border border-slate-200 bg-white pl-10 pr-3 text-sm shadow-sm outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+            />
+          </label>
+          <select
+            value={props.methodFilter}
+            onChange={(event) => props.setMethodFilter(event.target.value as "all" | PaymentMethod)}
+            className="h-11 rounded border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+          >
+            <option value="all">All methods</option>
+            <option>M-Pesa</option>
+            <option>Cash</option>
+            <option>Bank Transfer</option>
+          </select>
+          <select
+            value={props.statusFilter}
+            onChange={(event) => props.setStatusFilter(event.target.value as "all" | PaymentStatus)}
+            className="h-11 rounded border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+          >
+            <option value="all">All statuses</option>
+            <option value="Paid">{getPaymentStatusLabel("Paid")}</option>
+            <option value="Partial">{getPaymentStatusLabel("Partial")}</option>
+            <option value="Pending">{getPaymentStatusLabel("Pending")}</option>
+          </select>
+          <select
+            value={props.dateRange}
+            onChange={(event) => props.setDateRange(event.target.value as DateRangeFilter)}
+            className="h-11 rounded border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+          >
+            <option value="today">Today</option>
+            <option value="week">This week</option>
+            <option value="month">This month</option>
+            <option value="all">All dates</option>
+            <option value="custom">Custom</option>
+          </select>
+          <input
+            type="date"
+            value={props.customFrom}
+            onChange={(event) => props.setCustomFrom(event.target.value)}
+            disabled={props.dateRange !== "custom"}
+            className="h-11 rounded border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:bg-white/60 disabled:text-slate-400"
+          />
+          <input
+            type="date"
+            value={props.customTo}
+            onChange={(event) => props.setCustomTo(event.target.value)}
+            disabled={props.dateRange !== "custom"}
+            className="h-11 rounded border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:bg-white/60 disabled:text-slate-400"
+          />
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded border border-slate-200 bg-white shadow-soft">
+        <div className="overflow-x-auto">
+          <table className="min-w-[1120px] w-full border-collapse text-left text-sm">
+            <thead className="bg-slate-50">
+              <tr className="border-b border-slate-200 text-[11px] uppercase text-slate-500">
+                {["Date", "Payer", "Business", "Item", "Amount", "Method", "Status", "Balance", "Actions"].map((head) => (
+                  <th key={head} className="px-4 py-3 font-bold tracking-[0.08em]">{head}</th>
+                ))}
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {visiblePayments.length ? (
+                visiblePayments.map((payment) => {
+                  const canRemindBalance = payment.balance > 0 && canMessagePhone(payment.payerPhone);
+                  const canShareReceipt = canMessagePhone(payment.payerPhone);
+                  const canSendSms = Boolean(normalizeSmsPhone(payment.payerPhone));
+                  const rowIssues = props.confidenceLedger.byPaymentId[payment.id] ?? [];
+
+                  return (
+                    <tr key={payment.id} className="bg-white transition hover:bg-slate-50/80">
+                      <td className="px-4 py-4 align-top tabular text-slate-600">{dateFmt.format(new Date(payment.date))}</td>
+                      <td className="px-4 py-4 align-top">
+                        <p className="font-semibold text-slate-950">{payment.payerName}</p>
+                        <p className="mt-1 text-xs text-slate-500">{payment.payerPhone || payment.payerEmail || "No contact saved"}</p>
+                        <PaymentConfidenceBadge issues={rowIssues} />
+                      </td>
+                      <td className="px-4 py-4 align-top">
+                        <span className="inline-flex rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">{payment.businessName}</span>
+                      </td>
+                      <td className="max-w-[220px] px-4 py-4 align-top">
+                        <p className="font-medium text-slate-900">{payment.itemTitle}</p>
+                        <p className="mt-1 text-xs text-slate-500">Due {dateFmt.format(new Date(payment.dueDate))}</p>
+                      </td>
+                      <td className="px-4 py-4 align-top font-semibold tabular text-slate-950">{formatMoney(payment.amount)}</td>
+                      <td className="px-4 py-4 align-top text-slate-600">{payment.method}</td>
+                      <td className="px-4 py-4 align-top">
+                        <StatusBadge status={payment.status} brand={props.activeBrand} edited={payment.edited} />
+                      </td>
+                      <td className="px-4 py-4 align-top">
+                        <span className="font-semibold tabular" style={{ color: payment.balance > 0 ? props.activeBrand.alert : props.activeBrand.success }}>
+                          {formatMoney(payment.balance)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 align-top">
+                        <div className="flex max-w-[250px] flex-wrap gap-1.5">
+                          {canRemindBalance && (
+                            <IconButton
+                              label="Send balance reminder"
+                              icon={MessageCircle}
+                              onClick={() => openWhatsAppReminder(reminderFromPayment(payment))}
+                              glow
+                            />
+                          )}
+                          {canRemindBalance && canSendSms && (
+                            <IconButton
+                              label="Send balance SMS"
+                              icon={Smartphone}
+                              onClick={() => openSmsReminder(reminderFromPayment(payment))}
+                            />
+                          )}
+                          <IconButton label="Edit payment" icon={Pencil} onClick={() => props.onEdit(payment)} glow={!canRemindBalance} />
+                          <IconButton label="Print receipt" icon={Printer} onClick={() => props.onPrint(payment)} />
+                          {canShareReceipt && (
+                            <IconButton
+                              label="Share receipt message"
+                              icon={MessageCircle}
+                              onClick={() => props.onShareReceipt(payment)}
+                            />
+                          )}
+                          {canSendSms && (
+                            <IconButton
+                              label="Send receipt SMS"
+                              icon={Smartphone}
+                              onClick={() => openReceiptSms(payment)}
+                            />
+                          )}
+                          <IconButton label="Move to trash" icon={Trash2} onClick={() => props.onDelete(payment)} />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={9} className="px-4 py-14 text-center">
+                    <div className="mx-auto flex max-w-sm flex-col items-center">
+                      <span className="inline-flex h-12 w-12 items-center justify-center rounded bg-slate-100 text-slate-500">
+                        <ReceiptText className="h-6 w-6" />
+                      </span>
+                      <p className="mt-4 font-semibold text-slate-950">No payment records found</p>
+                      <p className="mt-1 text-sm leading-6 text-slate-500">Adjust the filters or add the first payment to start tracking balances.</p>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </Panel>
   );
@@ -2137,6 +2674,13 @@ function SettingsView({
   storageError,
   lastSavedAt,
   roles,
+  hasPattern,
+  biometricEnabled,
+  biometricAvailable,
+  onSavePattern,
+  onEnrollBiometric,
+  onResetBiometric,
+  onLock,
 }: {
   activeBrand: (typeof businesses)[BusinessId];
   storageBackend: StorageBackend;
@@ -2144,7 +2688,59 @@ function SettingsView({
   storageError: string | null;
   lastSavedAt: string | null;
   roles: Record<string, "admin" | "staff">;
+  hasPattern: boolean;
+  biometricEnabled: boolean;
+  biometricAvailable: boolean;
+  onSavePattern: (pattern: number[]) => Promise<void>;
+  onEnrollBiometric: () => Promise<void>;
+  onResetBiometric: () => void;
+  onLock: () => void;
 }) {
+  const [pattern, setPattern] = useState<number[]>([]);
+  const [confirmPattern, setConfirmPattern] = useState<number[] | null>(null);
+  const [securityMessage, setSecurityMessage] = useState("Pattern login is active on this device.");
+  const [securityBusy, setSecurityBusy] = useState(false);
+
+  async function saveNewPattern() {
+    if (pattern.length < 4) {
+      setSecurityMessage("Use at least 4 points for the pattern.");
+      return;
+    }
+
+    if (!confirmPattern) {
+      setConfirmPattern(pattern);
+      setPattern([]);
+      setSecurityMessage("Draw the same new pattern again to confirm.");
+      return;
+    }
+
+    if (confirmPattern.join("-") !== pattern.join("-")) {
+      setConfirmPattern(null);
+      setPattern([]);
+      setSecurityMessage("Patterns did not match. Start again.");
+      return;
+    }
+
+    setSecurityBusy(true);
+    await onSavePattern(pattern);
+    setPattern([]);
+    setConfirmPattern(null);
+    setSecurityMessage("Pattern updated.");
+    setSecurityBusy(false);
+  }
+
+  async function enableBiometric() {
+    setSecurityBusy(true);
+    try {
+      await onEnrollBiometric();
+      setSecurityMessage("Biometric unlock is ready on this device.");
+    } catch (error) {
+      setSecurityMessage(error instanceof Error ? error.message : "Biometric enrollment failed.");
+    } finally {
+      setSecurityBusy(false);
+    }
+  }
+
   return (
     <Panel title="Settings" icon={Settings}>
       <div className="grid gap-4 lg:grid-cols-2">
@@ -2178,6 +2774,117 @@ function SettingsView({
             Payment edits and soft deletes are logged. Production enforcement is handled by Postgres triggers in the included schema.
           </p>
           <div className="mt-4 h-1.5 rounded" style={{ backgroundColor: activeBrand.accent }} />
+        </div>
+        <div className="rounded border border-slate-200 bg-white p-5 lg:col-span-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="font-semibold text-slate-950">Device login security</p>
+              <p className="mt-2 text-sm leading-6 text-slate-500">
+                Pattern login is stored only on this browser. Biometric unlock uses the phone or computer lock already configured for this device.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onLock}
+              className="inline-flex items-center justify-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+            >
+              <Lock className="h-4 w-4" />
+              Lock now
+            </button>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            <div className="rounded border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center gap-3">
+                <span className="inline-flex h-9 w-9 items-center justify-center rounded bg-white" style={{ color: activeBrand.primary }}>
+                  <Lock className="h-4 w-4" />
+                </span>
+                <div>
+                  <p className="text-xs font-semibold uppercase text-slate-500">Pattern</p>
+                  <p className="text-sm font-semibold text-slate-950">{hasPattern ? "Active" : "Not set"}</p>
+                </div>
+              </div>
+            </div>
+            <div className="rounded border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center gap-3">
+                <span className="inline-flex h-9 w-9 items-center justify-center rounded bg-white" style={{ color: biometricEnabled ? activeBrand.success : "#64748B" }}>
+                  <Fingerprint className="h-4 w-4" />
+                </span>
+                <div>
+                  <p className="text-xs font-semibold uppercase text-slate-500">Biometric</p>
+                  <p className="text-sm font-semibold text-slate-950">{biometricEnabled ? "Enabled" : "Optional"}</p>
+                </div>
+              </div>
+            </div>
+            <div className="rounded border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center gap-3">
+                <span className="inline-flex h-9 w-9 items-center justify-center rounded bg-white" style={{ color: activeBrand.accent }}>
+                  <ShieldCheck className="h-4 w-4" />
+                </span>
+                <div>
+                  <p className="text-xs font-semibold uppercase text-slate-500">Auto lock</p>
+                  <p className="text-sm font-semibold text-slate-950">{idleLockMinutes} minutes</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-5 lg:grid-cols-[280px_1fr]">
+            <div>
+              <PatternPad pattern={pattern} onChange={setPattern} activeBrand={activeBrand} disabled={securityBusy} />
+              <button
+                type="button"
+                onClick={saveNewPattern}
+                disabled={securityBusy}
+                className="money-glow-button mt-3 inline-flex w-full items-center justify-center gap-2 rounded px-4 py-2.5 text-sm font-semibold text-white transition disabled:opacity-60"
+                style={{ backgroundColor: activeBrand.accent }}
+              >
+                <ShieldCheck className="h-4 w-4" />
+                {confirmPattern ? "Confirm new pattern" : hasPattern ? "Change pattern" : "Create pattern"}
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <p className="rounded border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">{securityMessage}</p>
+              <div className="rounded border border-slate-200 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-slate-950">Biometric unlock</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {biometricAvailable ? "This device supports platform biometric or screen-lock verification." : "This browser has not reported biometric support."}
+                    </p>
+                  </div>
+                  <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold uppercase text-slate-600">
+                    {biometricEnabled ? "On" : "Off"}
+                  </span>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={enableBiometric}
+                    disabled={securityBusy || !hasPattern || !biometricAvailable}
+                    className="inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:opacity-50"
+                  >
+                    <Fingerprint className="h-4 w-4" />
+                    {biometricEnabled ? "Re-enroll biometric" : "Enable biometric"}
+                  </button>
+                  {biometricEnabled && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onResetBiometric();
+                        setSecurityMessage("Biometric unlock removed from this browser.");
+                      }}
+                      className="inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      Remove biometric
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </Panel>
