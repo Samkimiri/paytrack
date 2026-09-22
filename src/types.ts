@@ -64,7 +64,7 @@ export type Payment = {
 export type AuditEntry = {
   id: string;
   paymentId: string;
-  action: "created" | "edited" | "deleted" | "restored";
+  action: "created" | "edited" | "deleted" | "restored" | "balance_closed";
   changedFields: string[];
   previousValues: Record<string, unknown>;
   changedAt: string;

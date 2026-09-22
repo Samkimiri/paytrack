@@ -75,6 +75,7 @@ type LockSettings = {
 };
 
 const hiddenMoneyText = "KES *****";
+const activeUserKey = "sam-creative-paytrack-active-user-v1";
 const lockSettingsKey = "sam-creative-paytrack-lock-v1";
 const patternSalt = "paytrack-local-pattern-v1";
 const idleLockMinutes = 10;
@@ -260,26 +261,20 @@ function openSmsMessage(phone: string, message: string) {
 function buildPaymentMessage({ payer, item, payment }: PaymentNotificationDetails) {
   const business = businesses[payment.businessId];
   const balance = Math.max(item.totalAmount - payment.amount, 0);
-  const lines: Array<string | null> = [
+
+  return [
+    `${business.name} — Payment Confirmed`,
     `Hello ${payer.fullName},`,
     "",
-    `Thank you for trusting ${business.name} with ${item.title}. We are pleased to confirm that your payment of ${money.format(payment.amount)} has been received.`,
+    `Amount: ${money.format(payment.amount)}`,
+    `For: ${item.title}`,
+    `Method: ${payment.method}`,
+    `Status: ${getPaymentStatusLabel(payment.status)}`,
+    `Date: ${payment.date}`,
+    `Balance: ${money.format(balance)}`,
     "",
-    "Payment summary:",
-    `- Amount received: ${money.format(payment.amount)}`,
-    `- Service/project: ${item.title}`,
-    `- Payment method: ${payment.method}`,
-    `- Payment status: ${getPaymentStatusLabel(payment.status)}`,
-    `- Payment date: ${payment.date}`,
-    `- Remaining balance: ${money.format(balance)}`,
-    "",
-    "We genuinely appreciate the opportunity to work with you. If you need more creative support, training, design work, or a follow-up service, we would be glad to help again and continue building on the work we have done together.",
-    "",
-    `Warm regards,`,
-    `${business.name}`,
-  ];
-
-  return lines.filter((line) => line !== null).join("\n");
+    "Thank you for your payment.",
+  ].join("\n");
 }
 
 function openPaymentNotifications(details: PaymentNotificationDetails) {
@@ -290,23 +285,18 @@ function buildReceiptShareMessage(payment: EnrichedPayment) {
   const business = businesses[payment.businessId];
 
   return [
-    `Hello ${payment.payerName},`,
+    `${business.name} — Receipt`,
+    `Payer: ${payment.payerName}`,
     "",
-    `Thank you. This is your payment receipt summary from ${business.name}.`,
+    `Item: ${payment.itemTitle}`,
+    `Amount paid: ${money.format(payment.amount)}`,
+    `Method: ${payment.method}`,
+    `Status: ${getPaymentStatusLabel(payment.status)}`,
+    `Date: ${payment.date}`,
+    `Balance remaining: ${money.format(payment.balance)}`,
     "",
-    "Receipt summary:",
-    `- Amount received: ${money.format(payment.amount)}`,
-    `- Service/project: ${payment.itemTitle}`,
-    `- Payment method: ${payment.method}`,
-    `- Payment status: ${getPaymentStatusLabel(payment.status)}`,
-    `- Payment date: ${payment.date}`,
-    `- Remaining balance: ${money.format(payment.balance)}`,
-    "",
-    "Please keep this message for your records. If anything needs correction, kindly let us know.",
-    "",
-    "Warm regards,",
-    business.name,
-  ].filter((line) => line !== null).join("\n");
+    "Please keep this for your records.",
+  ].join("\n");
 }
 
 function openReceiptShare(payment: EnrichedPayment) {
@@ -322,19 +312,18 @@ function buildBalanceReminderMessage(item: FollowUpItem) {
   const timing = item.daysUntilDue < 0
     ? `overdue by ${Math.abs(item.daysUntilDue)} day${Math.abs(item.daysUntilDue) === 1 ? "" : "s"}`
     : `due in ${item.daysUntilDue} day${item.daysUntilDue === 1 ? "" : "s"}`;
-  const dueDate = dateFmt.format(new Date(item.dueDate));
+  const dueDate = dateFmt.format(parseLocalDate(item.dueDate));
 
   return [
+    `${business.name} — Balance Reminder`,
     `Hello ${item.payerName},`,
     "",
-    `I hope you are doing well. This is a polite reminder from ${business.name} about the remaining balance of ${money.format(item.balance)} for ${item.itemTitle}.`,
-    `The balance was due on ${dueDate} and is currently ${timing}. Kindly complete the balance at your earliest convenience so we can close your account record smoothly.`,
-    `You can pay via Buy Goods & Services Till: ${balanceTillNumber}.`,
+    `Item: ${item.itemTitle}`,
+    `Balance due: ${money.format(item.balance)}`,
+    `Due date: ${dueDate} (${timing})`,
+    `Pay via Till: ${balanceTillNumber}`,
     "",
-    "Please let us know once you have completed the payment, or if you would like us to confirm any payment details.",
-    "",
-    "Warm regards,",
-    business.name,
+    "Kindly settle at your earliest convenience.",
   ].join("\n");
 }
 
@@ -344,6 +333,23 @@ function openWhatsAppReminder(item: FollowUpItem) {
 
 function openSmsReminder(item: FollowUpItem) {
   openSmsMessage(item.phone, buildBalanceReminderMessage(item));
+}
+
+function parseLocalDate(dateValue: string): Date {
+  return new Date(`${dateValue}T00:00:00`);
+}
+
+function computePaymentStatus(totalDue: number, paidBeforeThisPayment: number, amount: number): PaymentStatus {
+  if (totalDue - paidBeforeThisPayment - amount <= 0 && totalDue > 0) return "Paid";
+  return amount > 0 ? "Partial" : "Pending";
+}
+
+function csvCell(value: unknown): string {
+  let text = String(value);
+  if (/^[=+\-@\t\r]/.test(text)) {
+    text = `'${text}`;
+  }
+  return `"${text.replaceAll('"', '""')}"`;
 }
 
 function reminderFromPayment(payment: EnrichedPayment): FollowUpItem {
@@ -427,6 +433,7 @@ type FollowUpLedger = {
 type FormState = {
   businessId: BusinessId;
   payerId: string;
+  existingItemId: string;
   newPayerName: string;
   newPayerPhone: string;
   newPayerEmail: string;
@@ -463,6 +470,14 @@ function App() {
   const [payments, setPayments] = useState<Payment[]>(defaultAppData.payments);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>(defaultAppData.auditLog);
   const [roles, setRoles] = useState(defaultAppData.roles);
+  const [activeUser, setActiveUser] = useState<string>(() => {
+    try {
+      return window.localStorage.getItem(activeUserKey) || "admin";
+    } catch {
+      return "admin";
+    }
+  });
+  const isAdmin = (roles[activeUser] ?? "staff") === "admin";
   const [hydrated, setHydrated] = useState(false);
   const [storageBackend, setStorageBackend] = useState<StorageBackend>("browser");
   const [saveState, setSaveState] = useState<"loading" | "saved" | "saving" | "error">("loading");
@@ -614,20 +629,13 @@ function App() {
       window.clearTimeout(timeoutId);
       timeoutId = window.setTimeout(lockApp, idleLockMs);
     };
-    const lockWhenHidden = () => {
-      if (document.visibilityState === "hidden") {
-        lockApp();
-      }
-    };
     const activityEvents: Array<keyof WindowEventMap> = ["click", "keydown", "pointermove", "touchstart"];
 
     activityEvents.forEach((eventName) => window.addEventListener(eventName, resetIdleTimer, { passive: true }));
-    document.addEventListener("visibilitychange", lockWhenHidden);
 
     return () => {
       window.clearTimeout(timeoutId);
       activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetIdleTimer));
-      document.removeEventListener("visibilitychange", lockWhenHidden);
     };
   }, [isAuthenticated, lockApp]);
 
@@ -762,6 +770,12 @@ function App() {
     return () => window.clearTimeout(handle);
   }, [auditLog, hydrated, items, payers, payments, roles]);
 
+  useEffect(() => {
+    if (view === "settings" && !isAdmin) {
+      setView("home");
+    }
+  }, [isAdmin, view]);
+
   function recordAudit(paymentId: string, action: AuditEntry["action"], changedFields: string[], previousValues = {}) {
     setAuditLog((current) => [
       {
@@ -771,10 +785,48 @@ function App() {
         changedFields,
         previousValues,
         changedAt: new Date().toISOString(),
-        changedBy: "admin",
+        changedBy: activeUser,
       },
       ...current,
     ]);
+  }
+
+  function changeActiveUser(name: string) {
+    setActiveUser(name);
+    try {
+      window.localStorage.setItem(activeUserKey, name);
+    } catch {
+      // ignore storage failures (private mode, quota, etc.)
+    }
+  }
+
+  function addTeamMember(name: string, role: "admin" | "staff") {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setRoles((current) => ({ ...current, [trimmed]: role }));
+  }
+
+  function updateTeamMemberRole(name: string, role: "admin" | "staff") {
+    setRoles((current) => {
+      if (role === "staff") {
+        const remainingAdmins = Object.entries(current).filter(([user, r]) => r === "admin" && user !== name);
+        if (remainingAdmins.length === 0) return current;
+      }
+      return { ...current, [name]: role };
+    });
+  }
+
+  function removeTeamMember(name: string) {
+    setRoles((current) => {
+      const remainingAdmins = Object.entries(current).filter(([user, r]) => r === "admin" && user !== name);
+      if (current[name] === "admin" && remainingAdmins.length === 0) return current;
+      const next = { ...current };
+      delete next[name];
+      return next;
+    });
+    if (activeUser === name) {
+      changeActiveUser("admin");
+    }
   }
 
   function updatePayer(payerId: string, updates: Pick<Payer, "fullName" | "phone" | "email" | "type">) {
@@ -820,30 +872,48 @@ function App() {
         ...current,
         newPayer,
       ]);
+    } else if (notificationPayer) {
+      const trimmedPhone = state.newPayerPhone.trim();
+      const trimmedEmail = state.newPayerEmail.trim();
+      if (trimmedPhone !== notificationPayer.phone || trimmedEmail !== notificationPayer.email) {
+        const updatedPayer = { ...notificationPayer, phone: trimmedPhone, email: trimmedEmail };
+        notificationPayer = updatedPayer;
+        setPayers((current) => current.map((payer) => (payer.id === updatedPayer.id ? updatedPayer : payer)));
+      }
     }
 
     if (!payerId || !notificationPayer) {
       return;
     }
 
-    const itemId = crypto.randomUUID();
-    const newItem: Item = {
-      id: itemId,
-      businessId,
-      payerId,
-      title: state.itemTitle,
-      totalAmount: totalDue,
-      dueDate: state.dueDate || today,
-      installmentCount,
-      installmentAmount: Math.ceil(totalDue / installmentCount),
-      installmentFrequency: state.installmentFrequency as Item["installmentFrequency"],
-      balanceClosed: false,
-      createdAt: new Date().toISOString(),
-    };
+    const existingItem = state.existingItemId ? items.find((item) => item.id === state.existingItemId && item.payerId === payerId) : undefined;
+
+    let itemForNotification: Item;
+    if (existingItem) {
+      itemForNotification = existingItem;
+    } else {
+      const newItem: Item = {
+        id: crypto.randomUUID(),
+        businessId,
+        payerId,
+        title: state.itemTitle,
+        totalAmount: totalDue,
+        dueDate: state.dueDate || today,
+        installmentCount,
+        installmentAmount: Math.ceil(totalDue / installmentCount),
+        installmentFrequency: state.installmentFrequency as Item["installmentFrequency"],
+        balanceClosed: false,
+        createdAt: new Date().toISOString(),
+      };
+      setItems((current) => [...current, newItem]);
+      itemForNotification = newItem;
+    }
+
+    const itemId = itemForNotification.id;
     const paidForItem = payments
       .filter((payment) => payment.itemId === itemId && !payment.isDeleted)
       .reduce((sum, payment) => sum + payment.amount, 0);
-    const status: PaymentStatus = totalDue - paidForItem - amount <= 0 ? "Paid" : amount > 0 ? "Partial" : "Pending";
+    const status = computePaymentStatus(itemForNotification.totalAmount, paidForItem, amount);
     const newPayment: Payment = {
       id: crypto.randomUUID(),
       businessId,
@@ -861,11 +931,10 @@ function App() {
       edited: false,
     };
 
-    setItems((current) => [...current, newItem]);
     setPayments((current) => [newPayment, ...current]);
     recordAudit(newPayment.id, "created", ["amount", "method", "status"]);
     if (notificationPayer) {
-      openPaymentNotifications({ payer: notificationPayer, item: newItem, payment: newPayment });
+      openPaymentNotifications({ payer: notificationPayer, item: itemForNotification, payment: newPayment });
     }
     setSavedFlash(true);
     window.setTimeout(() => setSavedFlash(false), 1800);
@@ -886,7 +955,7 @@ function App() {
     const mpesaCode = method === "M-Pesa" ? (state.mpesaCode ?? "").trim() : "";
     const paymentDate = state.date || today;
     const dueDate = state.dueDate || today;
-    const status: PaymentStatus = totalDue - otherPaidForItem - amount <= 0 ? "Paid" : amount > 0 ? "Partial" : "Pending";
+    const status = computePaymentStatus(totalDue, otherPaidForItem, amount);
     const shouldReopenBalance = currentItem.balanceClosed && totalDue - otherPaidForItem - amount > 0;
     const previousValues: Record<string, unknown> = {};
     const changedFields: string[] = [];
@@ -936,8 +1005,8 @@ function App() {
           : item,
       ),
     );
-    setPayments((current) =>
-      current.map((payment) =>
+    setPayments((current) => {
+      const updated = current.map((payment) =>
         payment.id === currentPayment.id
           ? {
               ...payment,
@@ -951,8 +1020,17 @@ function App() {
               edited: true,
             }
           : payment,
-      ),
-    );
+      );
+
+      // Resync sibling payments' status against this item's (possibly changed) total due.
+      return updated.map((payment) => {
+        if (payment.itemId !== currentItem.id || payment.id === currentPayment.id || payment.isDeleted) return payment;
+        const paidByOthers = updated
+          .filter((other) => other.itemId === currentItem.id && other.id !== payment.id && !other.isDeleted)
+          .reduce((sum, other) => sum + other.amount, 0);
+        return { ...payment, status: computePaymentStatus(totalDue, paidByOthers, payment.amount) };
+      });
+    });
 
     if (changedFields.length) {
       recordAudit(currentPayment.id, "edited", changedFields, previousValues);
@@ -999,6 +1077,16 @@ function App() {
           : item,
       ),
     );
+
+    const anchorPayment = payments
+      .filter((payment) => payment.itemId === itemId && !payment.isDeleted)
+      .sort((a, b) => b.date.localeCompare(a.date))[0];
+    if (anchorPayment) {
+      recordAudit(anchorPayment.id, "balance_closed", ["balance_closed", "balance_closed_reason"], {
+        balance_closed: false,
+        balance_closed_reason: reason,
+      });
+    }
   }
 
   function restorePayment(payment: Payment) {
@@ -1022,46 +1110,186 @@ function App() {
   async function printReceipt(payment: EnrichedPayment) {
     const { default: jsPDF } = await import("jspdf");
     const brand = businesses[payment.businessId];
-    const doc = new jsPDF();
+    type ReceiptPdf = {
+      setFillColor: (color: string) => void;
+      setTextColor: (color: string) => void;
+      setDrawColor: (color: string) => void;
+      setFont: (fontName: string, fontStyle?: string) => void;
+      setFontSize: (size: number) => void;
+      rect: (x: number, y: number, w: number, h: number, style?: string) => void;
+      roundedRect: (x: number, y: number, w: number, h: number, rx: number, ry: number, style?: string) => void;
+      line: (x1: number, y1: number, x2: number, y2: number) => void;
+      text: (text: string | string[], x: number, y: number, options?: { align?: "left" | "center" | "right" }) => void;
+      getTextWidth: (text: string) => number;
+      splitTextToSize: (text: string, maxWidth: number) => string[];
+      save: (filename: string) => void;
+    };
+    const doc = new jsPDF() as unknown as ReceiptPdf;
+    const marginX = 18;
+    const pageWidth = 210;
+    const contentRight = pageWidth - marginX;
+    const receiptNo = payment.id.replace(/-/g, "").slice(-8).toUpperCase();
+    const statusColors: Record<PaymentStatus, { bg: string; text: string }> = {
+      Paid: { bg: "#E4F5EC", text: "#1F8A5A" },
+      Partial: { bg: "#FCF2DC", text: "#A66A00" },
+      Pending: { bg: "#FBE7E5", text: "#B3261E" },
+    };
+    const statusColor = statusColors[payment.status];
+
+    // Header band
+    doc.setFillColor(brand.accent);
+    doc.rect(0, 0, pageWidth, 4, "F");
     doc.setFillColor(brand.primary);
-    doc.rect(0, 0, 210, 34, "F");
+    doc.rect(0, 4, pageWidth, 36, "F");
+
+    // Monogram badge
+    const initials = brand.shortName.slice(0, 2).toUpperCase();
+    doc.setFillColor(brand.accent);
+    doc.roundedRect(marginX, 10, 18, 18, 3, 3, "F");
     doc.setTextColor("#ffffff");
-    doc.setFontSize(17);
-    doc.text(brand.name, 18, 18);
-    doc.setFontSize(10);
-    doc.text(brand.tagline ?? "Professional payment receipt", 18, 26);
-    doc.setTextColor(brand.primary);
-    doc.setFontSize(22);
-    doc.text("Payment Receipt", 18, 52);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text(initials, marginX + 9, 22, { align: "center" });
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(15);
+    doc.text(brand.name, marginX + 24, 18);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor("#E4E7F0");
+    doc.text(brand.tagline ?? "Professional payment records", marginX + 24, 25);
+
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
-    const receiptDoc = doc as unknown as { splitTextToSize: (text: string, maxWidth: number) => string[] };
-    const rows = [
-      ["Receipt ID", payment.id],
-      ["Date", dateFmt.format(new Date(payment.date))],
-      ["Payer", payment.payerName],
-      ["Item", payment.itemTitle],
-      ["Amount", money.format(payment.amount)],
-      ["Method", payment.method],
+    doc.setTextColor("#ffffff");
+    doc.text("PAYMENT RECEIPT", contentRight, 17, { align: "right" });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor("#E4E7F0");
+    doc.text(`No. ${receiptNo}`, contentRight, 24, { align: "right" });
+    doc.text(dateFmt.format(parseLocalDate(payment.date)), contentRight, 30, { align: "right" });
+
+    // Status pill
+    const statusLabel = getPaymentStatusLabel(payment.status).toUpperCase();
+    doc.setFontSize(9);
+    const pillWidth = doc.getTextWidth(statusLabel) + 12;
+    const pillX = contentRight - pillWidth;
+    const pillY = 46;
+    doc.setFillColor(statusColor.bg);
+    doc.roundedRect(pillX, pillY, pillWidth, 8, 4, 4, "F");
+    doc.setTextColor(statusColor.text);
+    doc.setFont("helvetica", "bold");
+    doc.text(statusLabel, pillX + pillWidth / 2, pillY + 5.5, { align: "center" });
+
+    // Billed to
+    doc.setFillColor(brand.light);
+    doc.rect(0, 62, pageWidth, 24, "F");
+    doc.setFillColor(brand.accent);
+    doc.rect(0, 62, 2, 24, "F");
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(brand.accent);
+    doc.text("BILLED TO", marginX, 70);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor("#172033");
+    doc.text(payment.payerName, marginX, 78);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10.5);
+    doc.setTextColor("#475066");
+    doc.text(payment.itemTitle, marginX, 84);
+
+    // Details table
+    const rows: [string, string][] = [
+      ["Payment method", payment.method],
+      ["Payment date", dateFmt.format(parseLocalDate(payment.date))],
       ["Payment status", getPaymentStatusLabel(payment.status)],
       ["Balance status", payment.balance === 0 ? "Payment complete" : "Balance due"],
-      ["Remaining Balance", money.format(payment.balance)],
     ];
-    let y = 70;
-    rows.forEach(([label, value]) => {
-      const wrappedValue = receiptDoc.splitTextToSize(String(value), 112);
+    let y = 100;
+    const rowHeight = 9;
+    rows.forEach((row, index) => {
+      if (index % 2 === 0) {
+        doc.setFillColor(brand.light);
+        doc.rect(marginX, y - 6, contentRight - marginX, rowHeight, "F");
+      }
+      const [label, value] = row;
+      const wrappedValue = doc.splitTextToSize(value, 90);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9.5);
       doc.setTextColor("#667085");
-      doc.text(label, 18, y);
+      doc.text(label, marginX + 4, y);
+      doc.setFont("helvetica", "bold");
       doc.setTextColor("#172033");
-      wrappedValue.forEach((line, lineIndex) => {
-        doc.text(line, 74, y + lineIndex * 6);
-      });
-      y += Math.max(wrappedValue.length, 1) * 6 + 4;
+      doc.text(wrappedValue, contentRight - 4, y, { align: "right" });
+      y += rowHeight;
     });
-    doc.setDrawColor(brand.accent);
-    const footerY = Math.max(y + 10, 170);
-    doc.line(18, footerY, 192, footerY);
-    doc.setTextColor("#667085");
-    doc.text("Generated by Sam Creative Payment Tracker", 18, footerY + 14);
+
+    // Amount paid highlight card — split into two coloured halves
+    y += 8;
+    const cardHeight = 26;
+    const cardWidth = contentRight - marginX;
+    const halfWidth = cardWidth / 2;
+    const balanceBg = payment.balance === 0 ? "#E4F5EC" : "#FBE7E5";
+    const balanceText = payment.balance === 0 ? "#1F8A5A" : "#B3261E";
+
+    doc.setFillColor(brand.primary);
+    doc.rect(marginX, y, halfWidth, cardHeight, "F");
+    doc.setFillColor(balanceBg);
+    doc.rect(marginX + halfWidth, y, halfWidth, cardHeight, "F");
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor("#D8DCE8");
+    doc.text("AMOUNT PAID", marginX + 8, y + 10);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(20);
+    doc.setTextColor("#ffffff");
+    doc.text(money.format(payment.amount), marginX + 8, y + 20);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(balanceText);
+    doc.text("REMAINING BALANCE", contentRight - 8, y + 10, { align: "right" });
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.setTextColor(balanceText);
+    doc.text(money.format(payment.balance), contentRight - 8, y + 20, { align: "right" });
+
+    // Footer note
+    const footerY = y + 26 + 20;
+    doc.setDrawColor(brand.light);
+    doc.line(marginX, footerY, contentRight, footerY);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor("#475066");
+    doc.text(
+      payment.balance > 0
+        ? `Outstanding balance can be paid via M-Pesa Buy Goods Till: ${balanceTillNumber}.`
+        : "Thank you for completing this payment.",
+      marginX,
+      footerY + 8,
+    );
+    doc.setFontSize(8);
+    doc.setTextColor("#98A2B3");
+    doc.text(`Receipt reference: ${payment.id}`, marginX, footerY + 15);
+
+    // Coloured bottom band
+    const pageHeight = 297;
+    const bandHeight = 16;
+    doc.setFillColor(brand.primary);
+    doc.rect(0, pageHeight - bandHeight, pageWidth, bandHeight, "F");
+    doc.setFillColor(brand.accent);
+    doc.rect(0, pageHeight - bandHeight, pageWidth, 2, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor("#ffffff");
+    doc.text(`Thank you for choosing ${brand.name}`, marginX, pageHeight - 6);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor("#D8DCE8");
+    doc.text("Sam Creative Payment Tracker", contentRight, pageHeight - 6, { align: "right" });
+
     doc.save(`${payment.payerName.replace(/\s+/g, "-")}-${payment.id}.pdf`);
   }
 
@@ -1078,7 +1306,7 @@ function App() {
       payment.balance,
     ]);
     const csv = [header, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
+      .map((row) => row.map(csvCell).join(","))
       .join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1104,7 +1332,7 @@ function App() {
       item.lastPaymentDate ?? "",
     ]);
     const csv = [header, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
+      .map((row) => row.map(csvCell).join(","))
       .join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1184,6 +1412,9 @@ function App() {
         hasPattern={Boolean(lockSettings.patternHash)}
         biometricEnabled={Boolean(lockSettings.biometricCredentialId)}
         biometricAvailable={biometricAvailable}
+        roles={roles}
+        activeUser={activeUser}
+        onChangeActiveUser={changeActiveUser}
         onSavePattern={savePattern}
         onVerifyPattern={verifyPattern}
         onBiometricUnlock={unlockWithBiometric}
@@ -1235,7 +1466,7 @@ function App() {
             </div>
 
             <nav className="mt-7 space-y-1">
-              {nav.map(({ id, label, icon: Icon }) => (
+              {nav.filter(({ id }) => id !== "settings" || isAdmin).map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}
                   className={`flex w-full items-center gap-3 rounded px-3 py-2.5 text-sm font-medium transition ${
@@ -1429,6 +1660,8 @@ function App() {
                 activeBrand={activeBrand}
                 scope={scope}
                 payers={payers}
+                items={items}
+                payments={payments}
                 savedFlash={savedFlash}
                 editContext={editContext}
                 onCancelEdit={cancelEditingPayment}
@@ -1461,6 +1694,10 @@ function App() {
                 storageError={storageError}
                 lastSavedAt={lastSavedAt}
                 roles={roles}
+                activeUser={activeUser}
+                onAddTeamMember={addTeamMember}
+                onUpdateTeamMemberRole={updateTeamMemberRole}
+                onRemoveTeamMember={removeTeamMember}
                 hasPattern={Boolean(lockSettings.patternHash)}
                 biometricEnabled={Boolean(lockSettings.biometricCredentialId)}
                 biometricAvailable={biometricAvailable}
@@ -1532,6 +1769,9 @@ function LoginGate({
   hasPattern,
   biometricEnabled,
   biometricAvailable,
+  roles,
+  activeUser,
+  onChangeActiveUser,
   onSavePattern,
   onVerifyPattern,
   onBiometricUnlock,
@@ -1540,6 +1780,9 @@ function LoginGate({
   hasPattern: boolean;
   biometricEnabled: boolean;
   biometricAvailable: boolean;
+  roles: Record<string, "admin" | "staff">;
+  activeUser: string;
+  onChangeActiveUser: (name: string) => void;
   onSavePattern: (pattern: number[]) => Promise<void>;
   onVerifyPattern: (pattern: number[]) => Promise<boolean>;
   onBiometricUnlock: () => Promise<boolean>;
@@ -1658,6 +1901,23 @@ function LoginGate({
           </div>
 
           <p className="mt-5 min-h-6 text-sm text-slate-500">{message}</p>
+
+          <div className="mt-5">
+            <label className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Signed in as</label>
+            <select
+              value={activeUser in roles ? activeUser : Object.keys(roles)[0]}
+              onChange={(event) => onChangeActiveUser(event.target.value)}
+              disabled={busy || isCoolingDown}
+              className="mt-2 w-full rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800"
+            >
+              {Object.entries(roles).map(([name, role]) => (
+                <option key={name} value={name}>
+                  {name} ({role})
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="mt-5">
             <PatternPad pattern={pattern} onChange={setPattern} activeBrand={activeBrand} disabled={busy || isCoolingDown} />
           </div>
@@ -2174,7 +2434,7 @@ function PaymentsView(props: {
 
                   return (
                     <tr key={payment.id} className="bg-white transition hover:bg-slate-50/80">
-                      <td className="px-4 py-4 align-top tabular text-slate-600">{dateFmt.format(new Date(payment.date))}</td>
+                      <td className="px-4 py-4 align-top tabular text-slate-600">{dateFmt.format(parseLocalDate(payment.date))}</td>
                       <td className="px-4 py-4 align-top">
                         <p className="font-semibold text-slate-950">{payment.payerName}</p>
                         <p className="mt-1 text-xs text-slate-500">{payment.payerPhone || payment.payerEmail || "No contact saved"}</p>
@@ -2230,7 +2490,15 @@ function PaymentsView(props: {
                               onClick={() => openReceiptSms(payment)}
                             />
                           )}
-                          <IconButton label="Move to trash" icon={Trash2} onClick={() => props.onDelete(payment)} />
+                          <IconButton
+                            label="Move to trash"
+                            icon={Trash2}
+                            onClick={() => {
+                              if (window.confirm(`Move ${payment.payerName}'s payment of ${money.format(payment.amount)} to trash?`)) {
+                                props.onDelete(payment);
+                              }
+                            }}
+                          />
                         </div>
                       </td>
                     </tr>
@@ -2402,6 +2670,8 @@ function AddPaymentView({
   activeBrand,
   scope,
   payers,
+  items,
+  payments,
   savedFlash,
   editContext,
   onCancelEdit,
@@ -2410,6 +2680,8 @@ function AddPaymentView({
   activeBrand: (typeof businesses)[BusinessId];
   scope: BusinessScope;
   payers: Payer[];
+  items: Item[];
+  payments: Payment[];
   savedFlash: boolean;
   editContext?: EditPaymentContext;
   onCancelEdit: () => void;
@@ -2421,6 +2693,7 @@ function AddPaymentView({
     () => ({
       businessId: editContext?.payment.businessId ?? defaultBusiness,
       payerId: editContext?.payment.payerId ?? "",
+      existingItemId: "",
       newPayerName: "",
       newPayerPhone: "",
       newPayerEmail: "",
@@ -2454,20 +2727,66 @@ function AddPaymentView({
   );
   const [form, setForm] = useState<FormState>(initialForm);
   const { formatMoney } = useMoneyPrivacy();
-  const balance = Math.max(Number(form.totalDue || 0) - Number(form.amount || 0) - (editContext?.otherPaidForItem ?? 0), 0);
-  const paymentStatusPreview: PaymentStatus = Number(form.totalDue || 0) - (editContext?.otherPaidForItem ?? 0) - Number(form.amount || 0) <= 0 && Number(form.totalDue || 0) > 0
+  const businessPayers = payers.filter((payer) => payer.businessId === form.businessId);
+
+  const payerOpenItems = useMemo(() => {
+    if (isEditing || !form.payerId) return [];
+    return items
+      .filter((item) => item.payerId === form.payerId && !item.balanceClosed)
+      .map((item) => {
+        const paid = payments
+          .filter((payment) => payment.itemId === item.id && !payment.isDeleted)
+          .reduce((sum, payment) => sum + payment.amount, 0);
+        return { item, paid, balance: Math.max(item.totalAmount - paid, 0) };
+      })
+      .filter((entry) => entry.balance > 0);
+  }, [isEditing, items, payments, form.payerId]);
+
+  const selectedExistingItem = payerOpenItems.find((entry) => entry.item.id === form.existingItemId);
+  const otherPaidForItem = editContext?.otherPaidForItem ?? selectedExistingItem?.paid ?? 0;
+  const effectiveTotalDue = selectedExistingItem ? selectedExistingItem.item.totalAmount : Number(form.totalDue || 0);
+  const balance = Math.max(effectiveTotalDue - Number(form.amount || 0) - otherPaidForItem, 0);
+  const paymentStatusPreview: PaymentStatus = effectiveTotalDue - otherPaidForItem - Number(form.amount || 0) <= 0 && effectiveTotalDue > 0
     ? "Paid"
     : Number(form.amount || 0) > 0
       ? "Partial"
       : "Pending";
-  const businessPayers = payers.filter((payer) => payer.businessId === form.businessId);
 
   useEffect(() => {
     setForm(initialForm);
   }, [initialForm]);
 
   const updateForm = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    setForm((current) => ({ ...current, [event.target.name]: event.target.value }));
+    const { name, value } = event.target;
+
+    if (name === "payerId") {
+      const chosenPayer = payers.find((payer) => payer.id === value);
+      setForm((current) => ({
+        ...current,
+        payerId: value,
+        existingItemId: "",
+        newPayerName: "",
+        newPayerPhone: chosenPayer?.phone ?? "",
+        newPayerEmail: chosenPayer?.email ?? "",
+      }));
+      return;
+    }
+
+    if (name === "existingItemId") {
+      const chosen = payerOpenItems.find((entry) => entry.item.id === value);
+      setForm((current) => ({
+        ...current,
+        existingItemId: value,
+        itemTitle: chosen ? chosen.item.title : current.itemTitle,
+        totalDue: chosen ? String(chosen.item.totalAmount) : current.totalDue,
+        installmentCount: chosen ? String(chosen.item.installmentCount) : current.installmentCount,
+        installmentFrequency: chosen ? chosen.item.installmentFrequency : current.installmentFrequency,
+        dueDate: chosen ? chosen.item.dueDate : current.dueDate,
+      }));
+      return;
+    }
+
+    setForm((current) => ({ ...current, [name]: value }));
   };
 
   return (
@@ -2501,25 +2820,70 @@ function AddPaymentView({
           </select>
         </Field>
         <Field label="New payer name">
-          <input name="newPayerName" value={form.newPayerName} onChange={updateForm} className="input" placeholder="Optional" disabled={isEditing} />
+          <input name="newPayerName" value={form.newPayerName} onChange={updateForm} className="input" placeholder="Leave blank for an existing payer" disabled={isEditing || Boolean(form.payerId)} />
         </Field>
-        <Field label="New payer phone">
+        <Field label={form.payerId ? "Phone (on file)" : "New payer phone"}>
           <input name="newPayerPhone" value={form.newPayerPhone} onChange={updateForm} className="input" placeholder="+254 ..." disabled={isEditing} />
         </Field>
-        <Field label="New payer email (optional)">
+        <Field label={form.payerId ? "Email (on file, optional)" : "New payer email (optional)"}>
           <input name="newPayerEmail" value={form.newPayerEmail} onChange={updateForm} type="email" className="input" placeholder="name@example.com" disabled={isEditing} />
         </Field>
+        {!isEditing && payerOpenItems.length > 0 && (
+          <div className="lg:col-span-2">
+            <Field label="Pay towards">
+              <select name="existingItemId" value={form.existingItemId} onChange={updateForm} className="input">
+                <option value="">New course/project</option>
+                {payerOpenItems.map(({ item, balance: itemBalance }) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title} — balance {formatMoney(itemBalance)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        )}
         <Field label="Course or project">
-          <input name="itemTitle" value={form.itemTitle} onChange={updateForm} className="input" required placeholder="Course/project name" />
+          <input
+            name="itemTitle"
+            value={form.itemTitle}
+            onChange={updateForm}
+            className="input"
+            required
+            placeholder="Course/project name"
+            disabled={Boolean(form.existingItemId)}
+          />
         </Field>
         <Field label="Total amount due">
-          <input name="totalDue" value={form.totalDue} onChange={updateForm} type="number" min="0" className="input tabular" required />
+          <input
+            name="totalDue"
+            value={form.totalDue}
+            onChange={updateForm}
+            type="number"
+            min="0"
+            className="input tabular"
+            required
+            disabled={Boolean(form.existingItemId)}
+          />
         </Field>
         <Field label="Installments">
-          <input name="installmentCount" value={form.installmentCount} onChange={updateForm} type="number" min="1" className="input tabular" />
+          <input
+            name="installmentCount"
+            value={form.installmentCount}
+            onChange={updateForm}
+            type="number"
+            min="1"
+            className="input tabular"
+            disabled={Boolean(form.existingItemId)}
+          />
         </Field>
         <Field label="Installment frequency">
-          <select name="installmentFrequency" value={form.installmentFrequency} onChange={updateForm} className="input">
+          <select
+            name="installmentFrequency"
+            value={form.installmentFrequency}
+            onChange={updateForm}
+            className="input"
+            disabled={Boolean(form.existingItemId)}
+          >
             <option value="once">Once</option>
             <option value="weekly">Weekly</option>
             <option value="monthly">Monthly</option>
@@ -2544,7 +2908,7 @@ function AddPaymentView({
           <input name="date" type="date" value={form.date} onChange={updateForm} className="input tabular" />
         </Field>
         <Field label="Due date">
-          <input name="dueDate" type="date" value={form.dueDate} onChange={updateForm} className="input tabular" />
+          <input name="dueDate" type="date" value={form.dueDate} onChange={updateForm} className="input tabular" disabled={Boolean(form.existingItemId)} />
         </Field>
         <div className="lg:col-span-2">
           <Field label="Notes">
@@ -2674,6 +3038,10 @@ function SettingsView({
   storageError,
   lastSavedAt,
   roles,
+  activeUser,
+  onAddTeamMember,
+  onUpdateTeamMemberRole,
+  onRemoveTeamMember,
   hasPattern,
   biometricEnabled,
   biometricAvailable,
@@ -2688,6 +3056,10 @@ function SettingsView({
   storageError: string | null;
   lastSavedAt: string | null;
   roles: Record<string, "admin" | "staff">;
+  activeUser: string;
+  onAddTeamMember: (name: string, role: "admin" | "staff") => void;
+  onUpdateTeamMemberRole: (name: string, role: "admin" | "staff") => void;
+  onRemoveTeamMember: (name: string) => void;
   hasPattern: boolean;
   biometricEnabled: boolean;
   biometricAvailable: boolean;
@@ -2696,6 +3068,9 @@ function SettingsView({
   onResetBiometric: () => void;
   onLock: () => void;
 }) {
+  const [newMemberName, setNewMemberName] = useState("");
+  const [newMemberRole, setNewMemberRole] = useState<"admin" | "staff">("staff");
+  const lastAdminStanding = Object.values(roles).filter((role) => role === "admin").length <= 1;
   const [pattern, setPattern] = useState<number[]>([]);
   const [confirmPattern, setConfirmPattern] = useState<number[] | null>(null);
   const [securityMessage, setSecurityMessage] = useState("Pattern login is active on this device.");
@@ -2755,18 +3130,75 @@ function SettingsView({
           {storageError && <p className="mt-2 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{storageError}</p>}
         </div>
         <div className="rounded border border-slate-200 bg-white p-5">
-          <p className="font-semibold text-slate-950">Role-based access</p>
+          <p className="font-semibold text-slate-950">Team access</p>
           <p className="mt-2 text-sm text-slate-500">
-            App data stores staff/admin roles in-app; admin actions are gated in the UI only, since the shared Appwrite snapshot is not per-user authenticated.
+            Only admins can reach Settings and manage the team. Everyone shares this device's pattern lock, so this list controls what each signed-in name can do inside the app, not who can unlock the device.
           </p>
           <div className="mt-4 space-y-2">
-            {Object.entries(roles).map(([user, role]) => (
-              <div key={user} className="flex items-center justify-between rounded border border-slate-200 px-3 py-2 text-sm">
-                <span className="font-medium text-slate-800">{user}</span>
-                <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold uppercase text-slate-600">{role}</span>
-              </div>
-            ))}
+            {Object.entries(roles).map(([user, role]) => {
+              const isOnlyAdmin = role === "admin" && lastAdminStanding;
+              return (
+                <div key={user} className="flex items-center justify-between gap-2 rounded border border-slate-200 px-3 py-2 text-sm">
+                  <span className="font-medium text-slate-800">
+                    {user}
+                    {user === activeUser && <span className="ml-2 text-xs font-normal text-slate-400">(you)</span>}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={role}
+                      disabled={isOnlyAdmin}
+                      onChange={(event) => onUpdateTeamMemberRole(user, event.target.value as "admin" | "staff")}
+                      className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-semibold uppercase text-slate-600 disabled:opacity-60"
+                    >
+                      <option value="admin">Admin</option>
+                      <option value="staff">Staff</option>
+                    </select>
+                    <button
+                      type="button"
+                      disabled={isOnlyAdmin}
+                      onClick={() => onRemoveTeamMember(user)}
+                      className="rounded p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label={`Remove ${user}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!newMemberName.trim()) return;
+              onAddTeamMember(newMemberName, newMemberRole);
+              setNewMemberName("");
+              setNewMemberRole("staff");
+            }}
+            className="mt-4 flex flex-wrap items-center gap-2"
+          >
+            <input
+              value={newMemberName}
+              onChange={(event) => setNewMemberName(event.target.value)}
+              placeholder="Add team member name"
+              className="min-w-0 flex-1 rounded border border-slate-200 px-3 py-2 text-sm"
+            />
+            <select
+              value={newMemberRole}
+              onChange={(event) => setNewMemberRole(event.target.value as "admin" | "staff")}
+              className="rounded border border-slate-200 bg-white px-2 py-2 text-sm"
+            >
+              <option value="staff">Staff</option>
+              <option value="admin">Admin</option>
+            </select>
+            <button
+              type="submit"
+              className="rounded px-3 py-2 text-sm font-semibold text-white"
+              style={{ backgroundColor: activeBrand.primary }}
+            >
+              Add
+            </button>
+          </form>
         </div>
         <div className="rounded border border-slate-200 bg-white p-5 lg:col-span-2">
           <p className="font-semibold text-slate-950">Audit policy</p>
@@ -3094,7 +3526,7 @@ function ProfileDetails({
               };
               return (
                 <tr key={payment.id} className="border-b border-slate-100">
-                  <td className="py-3 tabular">{dateFmt.format(new Date(payment.date))}</td>
+                  <td className="py-3 tabular">{dateFmt.format(parseLocalDate(payment.date))}</td>
                   <td>{item?.title}</td>
                   <td className="font-semibold tabular">{formatMoney(payment.amount)}</td>
                   <td><StatusBadge status={payment.status} brand={activeBrand} edited={payment.edited} /></td>
@@ -3121,7 +3553,7 @@ function ProfileDetails({
         <div className="mt-3 space-y-2">
           {payerAudit.map((entry) => (
             <div key={entry.id} className="rounded bg-white p-3 text-sm">
-              <span className="font-semibold capitalize">{entry.action}</span>
+              <span className="font-semibold capitalize">{entry.action.replaceAll("_", " ")}</span>
               <span className="text-slate-500"> on {dateFmt.format(new Date(entry.changedAt))} by {entry.changedBy}</span>
               <p className="mt-1 text-slate-500">Fields: {entry.changedFields.join(", ")}</p>
             </div>
@@ -3512,7 +3944,7 @@ function buildTrend(payments: EnrichedPayment[]) {
     const monthNumber = date.getMonth() + 1;
     const income = payments
       .filter((payment) => {
-        const paymentDate = new Date(payment.date);
+        const paymentDate = parseLocalDate(payment.date);
         return paymentDate.getFullYear() === year && paymentDate.getMonth() + 1 === monthNumber;
       })
       .reduce((sum, payment) => sum + payment.amount, 0);
@@ -3619,7 +4051,7 @@ function buildConfidenceLedger(
 
   const duplicateGroups = new Map<string, EnrichedPayment[]>();
   activePayments.forEach((payment) => {
-    const key = `${payment.payerId}|${payment.date}|${payment.amount}`;
+    const key = `${payment.payerId}|${payment.itemId}|${payment.date}|${payment.amount}`;
     duplicateGroups.set(key, [...(duplicateGroups.get(key) ?? []), payment]);
   });
   duplicateGroups.forEach((group) => {
@@ -3628,7 +4060,7 @@ function buildConfidenceLedger(
       issues.push({
         id: `duplicate-${payment.id}`,
         title: "Possible duplicate payment",
-        detail: `${formatMoney(payment.amount)} appears more than once for this payer on ${dateFmt.format(new Date(payment.date))}.`,
+        detail: `${formatMoney(payment.amount)} appears more than once for this payer on ${dateFmt.format(parseLocalDate(payment.date))}.`,
         severity: "warning",
         paymentId: payment.id,
         payerName: payment.payerName,

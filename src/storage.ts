@@ -49,13 +49,6 @@ const legacyDemoIds = new Set([
   "a-003",
 ]);
 
-const legacyDemoNames = new Set([
-  "Amina Otieno",
-  "Brian Mwangi",
-  "Nia Naturals Ltd",
-  "Karibu Foods",
-]);
-
 type SanitizedData = {
   data: AppData;
   changed: boolean;
@@ -68,6 +61,10 @@ const appwriteCollectionId = import.meta.env.VITE_APPWRITE_COLLECTION_ID as stri
 
 function canUseAppwrite() {
   return Boolean(appwriteEndpoint && appwriteProjectId && appwriteDatabaseId && appwriteCollectionId);
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: number }).code === 404;
 }
 
 let databasesInstance: Databases | null = null;
@@ -101,7 +98,7 @@ function normalizeData(data: Partial<AppData> | null | undefined): AppData {
 }
 
 function removeLegacyDemoRecords(data: AppData): SanitizedData {
-  const payers = data.payers.filter((payer) => !legacyDemoIds.has(payer.id) && !legacyDemoNames.has(payer.fullName));
+  const payers = data.payers.filter((payer) => !legacyDemoIds.has(payer.id));
   const payerIds = new Set(payers.map((payer) => payer.id));
   const items = data.items.filter((item) => !legacyDemoIds.has(item.id) && payerIds.has(item.payerId));
   const itemIds = new Set(items.map((item) => item.id));
@@ -136,11 +133,10 @@ function removeLegacyDemoRecords(data: AppData): SanitizedData {
 
 function purgeExpiredTrash(data: AppData): SanitizedData {
   const cutoff = Date.now() - TRASH_RETENTION_DAYS * 86_400_000;
+  const nowIso = new Date().toISOString();
   const payments = data.payments
     .map((payment) =>
-      payment.isDeleted && !payment.deletedAt
-        ? { ...payment, deletedAt: payment.updatedAt || payment.createdAt }
-        : payment,
+      payment.isDeleted && !payment.deletedAt ? { ...payment, deletedAt: nowIso } : payment,
     )
     .filter((payment) => {
       if (!payment.isDeleted) return true;
@@ -204,8 +200,7 @@ async function loadAppwriteData(): Promise<SanitizedData | null> {
 
     return doc?.payload ? sanitizeData(normalizeData(JSON.parse(doc.payload))) : null;
   } catch (error) {
-    const notFound = typeof error === "object" && error !== null && "code" in error && (error as { code?: number }).code === 404;
-    if (notFound) return null;
+    if (isNotFoundError(error)) return null;
     throw error instanceof Error ? error : new Error("Appwrite load failed");
   }
 }
@@ -219,17 +214,9 @@ async function saveAppwriteData(data: AppData): Promise<void> {
   };
 
   try {
-    await getDatabases().updateDocument(appwriteDatabaseId ?? "", appwriteCollectionId ?? "", SNAPSHOT_ID, payload);
+    await getDatabases().upsertDocument(appwriteDatabaseId ?? "", appwriteCollectionId ?? "", SNAPSHOT_ID, payload);
   } catch (error) {
-    const notFound = typeof error === "object" && error !== null && "code" in error && (error as { code?: number }).code === 404;
-    if (!notFound) throw error instanceof Error ? error : new Error("Appwrite save failed");
-
-    await getDatabases().createDocument(
-      appwriteDatabaseId ?? "",
-      appwriteCollectionId ?? "",
-      SNAPSHOT_ID,
-      payload,
-    );
+    throw error instanceof Error ? error : new Error("Appwrite save failed");
   }
 }
 
