@@ -9,16 +9,19 @@ npm install
 npm run dev
 ```
 
-Copy `.env.example` to `.env.local` and add Supabase credentials before deploying.
+Copy `.env.example` to `.env.local` and add Appwrite credentials before deploying.
 
-Production records sync to the `app_state_snapshots` table in Supabase. Browser storage is only a local development fallback when Supabase credentials are missing or online sync fails.
-
-Run `supabase/schema.sql` in your Supabase SQL editor after creating the project. The schema includes rerunnable policies for the shared online app snapshot used by the deployed frontend.
+Production records sync to a single document in an Appwrite database collection. Browser storage is only a local development fallback when Appwrite credentials are missing or online sync fails.
 
 ## Backend
 
-- `supabase/schema.sql` creates tables, views, row-level security policies, and audit triggers.
-- `supabase/functions/generate_receipt` returns payment and branding data for PDF receipts.
-- `supabase/functions/export_records` returns filtered records for CSV/Excel export.
+Uses [Appwrite](https://appwrite.io) (Databases API) to persist a single JSON snapshot of the app state:
 
-Payments are never hard-deleted. The database rejects hard deletes and logs inserts, edits, soft deletes, and restores.
+1. Create a project at [cloud.appwrite.io](https://cloud.appwrite.io).
+2. Create a Database, then a Collection inside it.
+3. Add a `payload` (String, large size) and `updated_at` (Datetime, optional) attribute to the collection.
+4. Grant the `Any` role Create/Read/Update permissions on the collection (no auth is used).
+5. Add a Web platform under Project Settings with your dev/prod hostnames.
+6. Fill in `VITE_APPWRITE_*` in `.env.local` with the endpoint, project ID, database ID, and collection ID.
+
+Payments are never hard-deleted from the client; soft-deleted records are purged from the snapshot after 30 days.

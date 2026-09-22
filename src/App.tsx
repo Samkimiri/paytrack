@@ -1272,7 +1272,7 @@ function App() {
 
             <div className="mt-auto rounded border border-white/12 p-4 text-sm text-white/70">
               <p className="font-medium text-white">Admin only</p>
-              <p className="mt-1">Supabase Auth and RLS schema included for production access control.</p>
+              <p className="mt-1">Appwrite-backed sync keeps records available across devices.</p>
               <div className="mt-4 rounded bg-white/10 px-3 py-2">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-white/55">Storage</p>
                 <p className="mt-1 font-medium text-white">
@@ -1282,7 +1282,7 @@ function App() {
                       ? "Saving online"
                       : saveState === "error"
                         ? "Online sync failed"
-                        : storageBackend === "supabase"
+                        : storageBackend === "appwrite"
                           ? "Saved online"
                           : "Saved locally"}
                 </p>
@@ -2757,7 +2757,7 @@ function SettingsView({
         <div className="rounded border border-slate-200 bg-white p-5">
           <p className="font-semibold text-slate-950">Role-based access</p>
           <p className="mt-2 text-sm text-slate-500">
-            App data stores staff/admin roles, while the Supabase schema enforces authenticated admin access with row-level security policies.
+            App data stores staff/admin roles in-app; admin actions are gated in the UI only, since the shared Appwrite snapshot is not per-user authenticated.
           </p>
           <div className="mt-4 space-y-2">
             {Object.entries(roles).map(([user, role]) => (

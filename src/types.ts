@@ -90,4 +90,4 @@ export type AppData = {
   roles: Record<string, UserRole>;
 };
 
-export type StorageBackend = "supabase" | "browser";
+export type StorageBackend = "appwrite" | "browser";

@@ -1,3 +1,4 @@
+import { Client, Databases } from "appwrite";
 import type { AppData, StorageBackend } from "./types";
 
 const STORAGE_KEY = "sam-creative-paytrack-state-v1";
@@ -18,8 +19,8 @@ type PersistResult = {
   savedAt: string;
 };
 
-type SupabaseSnapshot = {
-  payload: AppData;
+type AppwriteSnapshot = {
+  payload: string;
   updated_at?: string;
 };
 
@@ -60,20 +61,23 @@ type SanitizedData = {
   changed: boolean;
 };
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const appwriteEndpoint = import.meta.env.VITE_APPWRITE_ENDPOINT as string | undefined;
+const appwriteProjectId = import.meta.env.VITE_APPWRITE_PROJECT_ID as string | undefined;
+const appwriteDatabaseId = import.meta.env.VITE_APPWRITE_DATABASE_ID as string | undefined;
+const appwriteCollectionId = import.meta.env.VITE_APPWRITE_COLLECTION_ID as string | undefined;
 
-function canUseSupabase() {
-  return Boolean(supabaseUrl && supabaseAnonKey);
+function canUseAppwrite() {
+  return Boolean(appwriteEndpoint && appwriteProjectId && appwriteDatabaseId && appwriteCollectionId);
 }
 
-function headers() {
-  return {
-    apikey: supabaseAnonKey ?? "",
-    Authorization: `Bearer ${supabaseAnonKey ?? ""}`,
-    "Content-Type": "application/json",
-    Prefer: "resolution=merge-duplicates",
-  };
+let databasesInstance: Databases | null = null;
+
+function getDatabases(): Databases {
+  if (!databasesInstance) {
+    const client = new Client().setEndpoint(appwriteEndpoint ?? "").setProject(appwriteProjectId ?? "");
+    databasesInstance = new Databases(client);
+  }
+  return databasesInstance;
 }
 
 function normalizeData(data: Partial<AppData> | null | undefined): AppData {
@@ -188,57 +192,64 @@ function saveBrowserData(data: AppData) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
-async function loadSupabaseData(): Promise<SanitizedData | null> {
-  if (!canUseSupabase()) return null;
+async function loadAppwriteData(): Promise<SanitizedData | null> {
+  if (!canUseAppwrite()) return null;
 
-  const response = await fetch(
-    `${supabaseUrl}/rest/v1/app_state_snapshots?id=eq.${SNAPSHOT_ID}&select=payload`,
-    { headers: headers() },
-  );
+  try {
+    const doc = (await getDatabases().getDocument(
+      appwriteDatabaseId ?? "",
+      appwriteCollectionId ?? "",
+      SNAPSHOT_ID,
+    )) as unknown as AppwriteSnapshot;
 
-  if (!response.ok) {
-    throw new Error(`Supabase load failed (${response.status})`);
+    return doc?.payload ? sanitizeData(normalizeData(JSON.parse(doc.payload))) : null;
+  } catch (error) {
+    const notFound = typeof error === "object" && error !== null && "code" in error && (error as { code?: number }).code === 404;
+    if (notFound) return null;
+    throw error instanceof Error ? error : new Error("Appwrite load failed");
   }
-
-  const rows = (await response.json()) as SupabaseSnapshot[];
-  return rows[0]?.payload ? sanitizeData(normalizeData(rows[0].payload)) : null;
 }
 
-async function saveSupabaseData(data: AppData): Promise<void> {
-  if (!canUseSupabase()) return;
+async function saveAppwriteData(data: AppData): Promise<void> {
+  if (!canUseAppwrite()) return;
 
-  const response = await fetch(`${supabaseUrl}/rest/v1/app_state_snapshots?on_conflict=id`, {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify({
-      id: SNAPSHOT_ID,
-      payload: data,
-      updated_at: new Date().toISOString(),
-    }),
-  });
+  const payload = {
+    payload: JSON.stringify(data),
+    updated_at: new Date().toISOString(),
+  };
 
-  if (!response.ok) {
-    throw new Error(`Supabase save failed (${response.status})`);
+  try {
+    await getDatabases().updateDocument(appwriteDatabaseId ?? "", appwriteCollectionId ?? "", SNAPSHOT_ID, payload);
+  } catch (error) {
+    const notFound = typeof error === "object" && error !== null && "code" in error && (error as { code?: number }).code === 404;
+    if (!notFound) throw error instanceof Error ? error : new Error("Appwrite save failed");
+
+    await getDatabases().createDocument(
+      appwriteDatabaseId ?? "",
+      appwriteCollectionId ?? "",
+      SNAPSHOT_ID,
+      payload,
+    );
   }
 }
 
 export async function loadAppData(): Promise<LoadResult> {
-  if (canUseSupabase()) {
+  if (canUseAppwrite()) {
     try {
-      const supabaseResult = await loadSupabaseData();
-      const data = supabaseResult?.data ?? defaultAppData;
+      const appwriteResult = await loadAppwriteData();
+      const data = appwriteResult?.data ?? defaultAppData;
 
-      if (!supabaseResult || supabaseResult.changed) {
-        await saveSupabaseData(data);
+      if (!appwriteResult || appwriteResult.changed) {
+        await saveAppwriteData(data);
       }
 
       saveBrowserData(data);
-      return { data, backend: "supabase" };
+      return { data, backend: "appwrite" };
     } catch (error) {
       return {
         data: loadBrowserData(),
         backend: "browser",
-        error: error instanceof Error ? error.message : "Supabase load failed",
+        error: error instanceof Error ? error.message : "Appwrite load failed",
       };
     }
   }
@@ -251,17 +262,17 @@ export async function saveAppData(data: AppData): Promise<PersistResult> {
   const savedAt = new Date().toISOString();
   saveBrowserData(sanitized);
 
-  if (!canUseSupabase()) {
-    return { backend: "browser", error: "Supabase is not configured", savedAt };
+  if (!canUseAppwrite()) {
+    return { backend: "browser", error: "Appwrite is not configured", savedAt };
   }
 
   try {
-    await saveSupabaseData(sanitized);
-    return { backend: "supabase", savedAt };
+    await saveAppwriteData(sanitized);
+    return { backend: "appwrite", savedAt };
   } catch (error) {
     return {
       backend: "browser",
-      error: error instanceof Error ? error.message : "Supabase save failed",
+      error: error instanceof Error ? error.message : "Appwrite save failed",
       savedAt,
     };
   }
